@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Corne — екрани
+Comment=Режими OLED-екранів, картинки й анімації
+Exec=corne-hud gui
+Icon=input-keyboard
+Terminal=false
+Categories=Utility;Settings;
+Actions=draw;
+
+[Desktop Action draw]
+Name=Малювання
+Exec=corne-hud draw
