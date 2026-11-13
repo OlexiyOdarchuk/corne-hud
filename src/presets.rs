@@ -681,8 +681,7 @@ impl Gen for Snow {
                 px(f, xi, yi + 1, true);
             }
         }
-        for x in 0..W {
-            let g = self.ground[x];
+        for (x, &g) in self.ground.iter().enumerate() {
             for y in (H as f32 - g).ceil() as i32..H as i32 {
                 px(f, x as i32, y, true);
             }
@@ -1022,9 +1021,9 @@ impl Maze {
         let mut queue = std::collections::VecDeque::from([0usize]);
         prev[0] = 0;
         while let Some(c) = queue.pop_front() {
-            for d in 0..4 {
+            for (d, &open) in self.open[c].iter().enumerate() {
                 if let Some(n) = Self::neighbor(c, d) {
-                    if self.open[c][d] && prev[n] == usize::MAX {
+                    if open && prev[n] == usize::MAX {
                         prev[n] = c;
                         queue.push_back(n);
                     }
