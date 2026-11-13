@@ -702,7 +702,7 @@ void ui_render(uint8_t *fb, uint8_t screen, const ui_input_t *in) {
     if (in->shared->screens_off) return;
 
     if (screen != last_screen) {
-        toast       = last_screen != 0xFF;
+        toast       = last_screen != 0xFF && !in->shared->quiet;
         toast_at    = in->now;
         last_screen = screen;
     }

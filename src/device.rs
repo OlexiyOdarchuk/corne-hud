@@ -16,7 +16,8 @@ const VID: u32 = 0x4653;
 const PID: u32 = 0x0001;
 
 pub const CMD: u8 = 0x70;
-pub const PROTO: u8 = 1;
+/// Найновіша відома версія. 2 додала тихе перемикання режиму (без підказки з назвою).
+pub const PROTO: u8 = 2;
 pub const IMAGE_CHUNK: usize = 28;
 pub const IMAGE_CHUNKS: usize = FB.div_ceil(IMAGE_CHUNK);
 pub const TEXT_LEN: usize = 48;
@@ -168,9 +169,9 @@ impl Device {
             .hello_rx
             .recv_timeout(Duration::from_millis(500))
             .map_err(|_| "клавіатура не відповідає")?;
-        if h.proto != PROTO {
+        if h.proto == 0 || h.proto > PROTO {
             return Err(format!(
-                "версія протоколу прошивки {} (потрібна {PROTO}) — перепрошийте клавіатуру",
+                "невідома версія протоколу прошивки {} — оновіть corne-hud",
                 h.proto
             ));
         }

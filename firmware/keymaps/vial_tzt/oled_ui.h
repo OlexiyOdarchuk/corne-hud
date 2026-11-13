@@ -37,6 +37,7 @@ typedef struct __attribute__((packed)) {
     uint8_t main_screen; // режим екрана на половині з USB
     uint8_t side_screen; // режим на другій половині
     uint8_t screens_off;
+    uint8_t quiet;   // режим змінено з ПК без підказки з назвою (тимчасовий показ)
     uint8_t caps;    // Caps Lock або Caps Word
     uint8_t pc_link; // corne-hud на зв'язку
     uint8_t hour, minute;

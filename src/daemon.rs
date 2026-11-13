@@ -11,8 +11,9 @@ use std::time::{Duration, Instant};
 use chrono::Timelike;
 
 use crate::device::{self, Device, Packet};
-use crate::ipc::{self, Request, Response, Screen, Status, Target};
+use crate::ipc::{self, Request, Response, Screen, Settings, Status, Target};
 use crate::oled::{self, Anim, Frame};
+use crate::pixfont;
 use crate::presets::{self, Gen};
 use crate::sysinfo;
 
@@ -63,6 +64,42 @@ struct State {
     slots: [Slot; 2],
     pending: VecDeque<Packet>,
     status: Status,
+    flash: Option<Flash>,
+    /// Коли закінчився останній показ: відповіді клавіатури, надіслані під час показу, застарілі.
+    flash_ended: Option<Instant>,
+    layout: Arc<Mutex<sysinfo::Layout>>,
+}
+
+/// Короткий показ розкладки поверх екранів.
+struct Flash {
+    frame: Frame,
+    until: Instant,
+    /// Половини, на яких іде показ, і режим, до якого повернутись (None — уже була «картинка»).
+    slots: Vec<(usize, Option<Screen>)>,
+}
+
+const FLASH_TIME: Duration = Duration::from_millis(800);
+
+fn settings_file() -> PathBuf {
+    config_dir().join("settings.json")
+}
+
+fn load_settings() -> Settings {
+    std::fs::read_to_string(settings_file())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// Кадр із назвою розкладки великими літерами в рамці.
+fn layout_frame(name: &str) -> Frame {
+    let mut f = [0u8; oled::FB];
+    let scale = if pixfont::width(name, 4) <= 120 { 4 } else { 2 };
+    let x = (oled::W as i32 - pixfont::width(name, scale)) / 2;
+    let y = (oled::H as i32 - 5 * scale) / 2;
+    pixfont::draw(&mut f, x, y, name, scale, true);
+    crate::draw::rect(&mut f, (0, 0), (oled::W as i32 - 1, oled::H as i32 - 1), false, 1, true);
+    f
 }
 
 pub fn config_dir() -> PathBuf {
@@ -121,6 +158,7 @@ pub fn run() -> Result<(), String> {
             None => Content::None,
         }
     };
+    let layout = sysinfo::watch_layout();
     let state = Arc::new(Mutex::new(State {
         slots: [
             Slot {
@@ -133,7 +171,13 @@ pub fn run() -> Result<(), String> {
             },
         ],
         pending: VecDeque::new(),
-        status: Status::default(),
+        status: Status {
+            settings: load_settings(),
+            ..Status::default()
+        },
+        flash: None,
+        flash_ended: None,
+        layout: layout.clone(),
     }));
 
     {
@@ -148,6 +192,7 @@ pub fn run() -> Result<(), String> {
 
     eprintln!("corne-hud: служба запущена, сокет {}", path.display());
     let music = sysinfo::watch_music();
+    let mut layout_seen: Option<u64> = None;
     let mut cpu = sysinfo::Cpu::default();
     let mut dev: Option<Device> = None;
     let mut next_try = Instant::now();
@@ -232,6 +277,8 @@ pub fn run() -> Result<(), String> {
                 &mut text_sent,
                 &mut cpu,
                 &music,
+                &layout,
+                &mut layout_seen,
             );
             if let Err(e) = res {
                 eprintln!("corne-hud: зв'язок втрачено: {e}");
@@ -249,6 +296,7 @@ fn apply_hello(st: &mut Status, h: device::Hello) {
     st.main_screen = Screen::from_index(h.main_screen);
     st.side_screen = Screen::from_index(h.side_screen);
     st.screens_off = h.screens_off;
+    st.fw_proto = h.proto;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -261,8 +309,11 @@ fn tick(
     text_sent: &mut Option<(String, Instant)>,
     cpu: &mut sysinfo::Cpu,
     music: &Mutex<Option<sysinfo::Track>>,
+    layout: &Mutex<sysinfo::Layout>,
+    layout_seen: &mut Option<u64>,
 ) -> std::io::Result<()> {
     let mut st = state.lock().unwrap();
+    let st = &mut *st;
 
     while let Some(p) = st.pending.pop_front() {
         d.send(&p)?;
@@ -270,7 +321,12 @@ fn tick(
 
     // Режими можна міняти й клавішами — раз на 2 с питаємо клавіатуру.
     if let Some(h) = d.poll_hello() {
-        apply_hello(&mut st.status, h);
+        let stale = st.flash.is_some() || st.flash_ended.is_some_and(|t| now - t < Duration::from_millis(500));
+        if stale {
+            st.status.fw_proto = h.proto;
+        } else {
+            apply_hello(&mut st.status, h);
+        }
     }
     if now >= *next_hello {
         *next_hello = now + Duration::from_secs(2);
@@ -316,7 +372,24 @@ fn tick(
         }
     }
 
+    // Розкладка змінилась — коротко показати її.
+    let (name, seq) = {
+        let l = layout.lock().unwrap();
+        (l.name.clone(), l.seq)
+    };
+    st.status.layout = name.clone();
+    if layout_seen.replace(seq).is_some_and(|old| old != seq) && st.status.settings.layout_flash && !name.is_empty() {
+        start_flash(d, st, &name, now)?;
+    }
+    if st.flash.as_ref().is_some_and(|fl| now >= fl.until) {
+        end_flash(d, st, now)?;
+    }
+    let flashing: Vec<usize> = st.flash.iter().flat_map(|fl| fl.slots.iter().map(|s| s.0)).collect();
+
     for (i, slot) in st.slots.iter_mut().enumerate() {
+        if flashing.contains(&i) {
+            continue;
+        }
         let frame = match &mut slot.content {
             Content::Anim { anim, idx, next_at } if now >= *next_at => {
                 let f = anim.frames[*idx];
@@ -350,6 +423,77 @@ fn tick(
         if let Some(f) = frame {
             d.send_frame(MASKS[i], &f, slot.last_sent.as_ref())?;
             slot.last_sent = Some(f);
+        }
+    }
+    Ok(())
+}
+
+fn quiet_screen_packet(i: usize, screen: Screen) -> Packet {
+    device::packet(device::SET_SCREEN, &[MASKS[i], screen.index(), 0, 1])
+}
+
+fn start_flash(d: &mut Device, st: &mut State, name: &str, now: Instant) -> std::io::Result<()> {
+    let frame = layout_frame(name);
+    // Уже показуємо — лише оновити напис і продовжити.
+    if let Some(fl) = st.flash.as_mut() {
+        fl.frame = frame;
+        fl.until = now + FLASH_TIME;
+        for &(i, _) in &fl.slots {
+            d.send_frame(MASKS[i], &frame, st.slots[i].last_sent.as_ref())?;
+            st.slots[i].last_sent = Some(frame);
+        }
+        return Ok(());
+    }
+    let quiet = st.status.fw_proto >= 2;
+    let mut slots = Vec::new();
+    for &i in st.status.settings.layout_target.slots() {
+        let screen = if i == 0 {
+            st.status.main_screen
+        } else {
+            st.status.side_screen
+        };
+        let Some(screen) = screen else { continue };
+        if screen == Screen::Image {
+            slots.push((i, None));
+        } else if quiet {
+            // Стара прошивка показала б поверх назву режиму, тому лише з новою.
+            slots.push((i, Some(screen)));
+        }
+    }
+    for &(i, prev) in &slots {
+        d.send_frame(MASKS[i], &frame, st.slots[i].last_sent.as_ref())?;
+        st.slots[i].last_sent = Some(frame);
+        if prev.is_some() {
+            d.send(&quiet_screen_packet(i, Screen::Image))?;
+        }
+    }
+    if !slots.is_empty() {
+        st.flash = Some(Flash {
+            frame,
+            until: now + FLASH_TIME,
+            slots,
+        });
+    }
+    Ok(())
+}
+
+fn end_flash(d: &mut Device, st: &mut State, now: Instant) -> std::io::Result<()> {
+    let Some(fl) = st.flash.take() else { return Ok(()) };
+    st.flash_ended = Some(now);
+    for (i, prev) in fl.slots {
+        if let Some(screen) = prev {
+            d.send(&quiet_screen_packet(i, screen))?;
+            note_screen(&mut st.status, if i == 0 { Target::Main } else { Target::Side }, screen);
+        }
+        let slot = &mut st.slots[i];
+        match &mut slot.content {
+            Content::Anim { next_at, .. } | Content::Live { next_at, .. } => *next_at = now,
+            Content::Stream { fresh, .. } => *fresh = true,
+            Content::None => {
+                // прибрати напис із пам'яті «картинки»
+                d.send(&device::packet(device::CLEAR, &[MASKS[i]]))?;
+                slot.last_sent = None;
+            }
         }
     }
     Ok(())
@@ -392,8 +536,16 @@ fn note_screen(st: &mut Status, target: Target, screen: Screen) {
 fn handle(req: Request, state: &Mutex<State>) -> Response {
     let mut st = state.lock().unwrap();
     match req {
+        Request::Settings { settings } => {
+            let _ = std::fs::create_dir_all(config_dir());
+            if let Err(e) = std::fs::write(settings_file(), serde_json::to_string(&settings).unwrap_or_default()) {
+                eprintln!("corne-hud: не вдалося зберегти налаштування: {e}");
+            }
+            st.status.settings = settings;
+        }
         Request::Status => {
             let mut s = st.status.clone();
+            s.layout = st.layout.lock().unwrap().name.clone();
             s.main_content = st.slots[0].describe();
             s.side_content = st.slots[1].describe();
             return Response::Status(s);

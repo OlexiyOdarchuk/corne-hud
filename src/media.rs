@@ -102,12 +102,16 @@ fn save_gif(path: &Path, frames: Vec<RgbaImage>, delay_ms: u32) -> Result<(), St
 pub fn render(dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
 
-    // Заготовки: 3 стовпці, 4 секунди.
+    // Заготовки: 3 стовпці, 4 секунди. Звукові тут були б пласкими — для них окремий GIF.
+    let shown: Vec<_> = PRESETS
+        .iter()
+        .filter(|p| !matches!(p.id, "spectrum" | "scope"))
+        .collect();
     let grid = Grid {
         cols: 3,
-        rows: PRESETS.len().div_ceil(3) as u32,
+        rows: shown.len().div_ceil(3) as u32,
     };
-    let mut gens: Vec<_> = PRESETS
+    let mut gens: Vec<_> = shown
         .iter()
         .map(|p| presets::make(p.id, presets::DEFAULT_TEXT).unwrap())
         .collect();
@@ -115,7 +119,7 @@ pub fn render(dir: &Path) -> Result<(), String> {
     let mut frames = Vec::new();
     for k in 0..80 {
         let mut img = RgbaImage::from_pixel(gw, gh, BG);
-        for (i, (p, g)) in PRESETS.iter().zip(&mut gens).enumerate() {
+        for (i, (p, g)) in shown.iter().zip(&mut gens).enumerate() {
             let mut f = [0u8; FB];
             g.frame(k as f32 / 20.0, &mut f);
             let o = grid.origin(i as u32);
@@ -145,6 +149,40 @@ pub fn render(dir: &Path) -> Result<(), String> {
         frames.push(img);
     }
     save_gif(&dir.join("effects.gif"), frames, 70)?;
+
+    // Котик: друкує, відпочиває, засинає.
+    let mut cat = crate::live::Bongo::new();
+    let mut frames = Vec::new();
+    for k in 0..120 {
+        let t = k as f32 / 20.0 + if k >= 80 { 8.0 } else { 0.0 };
+        if k < 56 && k % 3 == 0 {
+            cat.demo_hit(t);
+        }
+        let mut f = [0u8; FB];
+        crate::presets::Gen::frame(&mut cat, t, &mut f);
+        frames.push(crate::oled::to_rgba(&f, 4));
+    }
+    save_gif(&dir.join("bongo.gif"), frames, 50)?;
+
+    // Спектр на тестовому сигналі: бочка раз на пів секунди і «мелодія» в середніх частотах.
+    let mut sp = crate::live::Spectrum::new();
+    let mut frames = Vec::new();
+    for k in 0..120 {
+        let t = k as f32 / 20.0;
+        let kick = (-((t * 2.0) % 1.0) * 7.0).exp();
+        let mut bands = [0f32; crate::audio::BANDS];
+        for (b, v) in bands.iter_mut().enumerate() {
+            let x = b as f32 / crate::audio::BANDS as f32;
+            let bass = kick * (1.0 - x * 3.0).max(0.0);
+            let mid = 0.55 * (-((x - 0.45 - 0.15 * (t * 0.9).sin()) * 7.0).powi(2)).exp();
+            let air = 0.25 * (1.0 - x) * (0.6 + 0.4 * (t * 5.0 + b as f32).sin());
+            *v = (bass + mid + air).clamp(0.0, 1.0);
+        }
+        let mut f = [0u8; FB];
+        sp.draw_levels(&bands, t, &mut f);
+        frames.push(crate::oled::to_rgba(&f, 4));
+    }
+    save_gif(&dir.join("spectrum.gif"), frames, 50)?;
 
     Ok(())
 }

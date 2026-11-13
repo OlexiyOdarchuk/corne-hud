@@ -12,7 +12,7 @@
 #define SETTINGS_MAGIC 0xC5
 
 #define HUD_CMD 0x70
-#define HUD_PROTO 1
+#define HUD_PROTO 2
 #define HUD_LINK_TIMEOUT 5000
 #define HUD_IMAGE_CHUNK 28
 
@@ -22,7 +22,7 @@ enum {
     HUD_TEXT       = 0x03, // [2] зсув, [3] довжина (<= 28), [4..] символи
     HUD_IMAGE      = 0x04, // [2] маска екранів, [3] номер шматка 0..18, [4..31] 28 байт кадру
     HUD_COMMIT     = 0x05, // [2] маска: показати зібраний кадр
-    HUD_SET_SCREEN = 0x06, // [2] маска, [3] режим, [4] 1 = запам'ятати
+    HUD_SET_SCREEN = 0x06, // [2] маска, [3] режим, [4] 1 = запам'ятати, [5] 1 = без підказки
     HUD_CLEAR      = 0x07, // [2] маска: прибрати картинку
     HUD_SET_OFF    = 0x08, // [2] 1 = вимкнути екрани, [3] 1 = запам'ятати
 };
@@ -149,6 +149,7 @@ bool process_record_screens(uint16_t keycode, keyrecord_t *record) {
     if (keycode != SCR_MAIN && keycode != SCR_SIDE && keycode != SCR_OFF) return true;
     if (record->event.pressed) {
         bool backwards = (get_mods() | get_oneshot_mods()) & MOD_MASK_SHIFT;
+        shared.quiet = 0;
         if (keycode == SCR_MAIN) shared.main_screen = cycle(shared.main_screen, backwards);
         if (keycode == SCR_SIDE) shared.side_screen = cycle(shared.side_screen, backwards);
         if (keycode == SCR_OFF) shared.screens_off = !shared.screens_off;
@@ -201,6 +202,7 @@ void raw_hid_receive_kb(uint8_t *data, uint8_t length) {
             break;
         case HUD_SET_SCREEN:
             if (data[3] >= UI_SCR_COUNT) break;
+            shared.quiet = data[5] ? 1 : 0; // [5] 1 = без підказки з назвою режиму
             if (mask & TARGET_MAIN) shared.main_screen = data[3];
             if (mask & TARGET_SIDE) shared.side_screen = data[3];
             if (data[4]) settings_save();

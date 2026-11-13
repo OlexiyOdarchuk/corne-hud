@@ -1,6 +1,7 @@
-//! Дані для екрана «Годинник, CPU/RAM, музика».
+//! Дані про комп'ютер: CPU, RAM, температури, батарея, музика, розкладка клавіатури.
 
 use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -51,6 +52,234 @@ pub fn ram_percent() -> u8 {
         (Some(t), Some(a)) if t > 0 => ((t - a.min(t)) * 100 / t) as u8,
         _ => 0,
     }
+}
+
+/* --------------------------------------------------------- температури, батарея */
+
+fn read_trim(p: &Path) -> Option<String> {
+    std::fs::read_to_string(p).ok().map(|s| s.trim().to_string())
+}
+
+/// Датчик температури в hwmon: файл `tempN_input` з потрібною міткою або перший.
+fn hwmon_temp(names: &[&str], labels: &[&str]) -> Option<PathBuf> {
+    let dirs: Vec<PathBuf> = std::fs::read_dir("/sys/class/hwmon")
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    for want in names {
+        for dir in &dirs {
+            if read_trim(&dir.join("name")).as_deref() != Some(want) {
+                continue;
+            }
+            let mut inputs: Vec<PathBuf> = std::fs::read_dir(dir)
+                .ok()?
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with("temp") && n.ends_with("_input"))
+                })
+                .collect();
+            inputs.sort();
+            let labelled = inputs.iter().find(|p| {
+                let label = p.to_string_lossy().replace("_input", "_label");
+                read_trim(Path::new(&label)).is_some_and(|l| labels.iter().any(|w| l.eq_ignore_ascii_case(w)))
+            });
+            if let Some(p) = labelled.or(inputs.first()) {
+                return Some(p.clone());
+            }
+        }
+    }
+    None
+}
+
+fn read_temp(p: &Option<PathBuf>) -> Option<f32> {
+    let v: f32 = read_trim(p.as_ref()?)?.parse().ok()?;
+    Some(v / 1000.0)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Power {
+    Charging,
+    Discharging,
+    Full,
+    /// Від мережі, але не заряджається (обмеження заряду тощо).
+    Idle,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Reading {
+    pub cpu_temp: Option<f32>,
+    /// Друга температура: відеокарта, а якщо її датчика немає — SSD. Назва: GPU або SSD.
+    pub extra_temp: Option<(&'static str, f32)>,
+    pub battery: Option<(u8, Power)>,
+}
+
+/// Знайдені один раз шляхи до датчиків.
+pub struct Sensors {
+    cpu: Option<PathBuf>,
+    gpu: Option<PathBuf>,
+    ssd: Option<PathBuf>,
+    battery: Option<PathBuf>,
+}
+
+impl Sensors {
+    pub fn find() -> Self {
+        let battery = std::fs::read_dir("/sys/class/power_supply").ok().and_then(|d| {
+            d.flatten().map(|e| e.path()).find(|p| {
+                read_trim(&p.join("type")).as_deref() == Some("Battery")
+                    && read_trim(&p.join("scope")).as_deref() != Some("Device") // не батарея миші
+                    && p.join("capacity").exists()
+            })
+        });
+        Self {
+            cpu: hwmon_temp(
+                &["coretemp", "k10temp", "zenpower", "cpu_thermal", "acpitz"],
+                &["Package id 0", "Tctl", "Tdie"],
+            ),
+            gpu: hwmon_temp(&["amdgpu", "nouveau", "radeon", "xe", "i915"], &["edge", "pkg"]),
+            ssd: hwmon_temp(&["nvme"], &["Composite"]),
+            battery,
+        }
+    }
+
+    pub fn read(&self) -> Reading {
+        let extra = match (read_temp(&self.gpu), read_temp(&self.ssd)) {
+            (Some(t), _) => Some(("GPU", t)),
+            (None, Some(t)) => Some(("SSD", t)),
+            _ => None,
+        };
+        let battery = self.battery.as_ref().and_then(|b| {
+            let cap: u8 = read_trim(&b.join("capacity"))?.parse().ok()?;
+            let power = match read_trim(&b.join("status")).as_deref() {
+                Some("Charging") => Power::Charging,
+                Some("Full") => Power::Full,
+                Some("Not charging") => Power::Idle,
+                _ => Power::Discharging,
+            };
+            Some((cap.min(100), power))
+        });
+        Reading {
+            cpu_temp: read_temp(&self.cpu),
+            extra_temp: extra,
+            battery,
+        }
+    }
+}
+
+/* --------------------------------------------------------- розкладка */
+
+#[derive(Clone, Debug, Default)]
+pub struct Layout {
+    /// Коротка назва для екрана: EN, UA, …
+    pub name: String,
+    /// Зростає з кожною зміною розкладки.
+    pub seq: u64,
+}
+
+/// Рядки в лапках із виводу busctl (з восьмеричними екрануваннями UTF-8).
+fn busctl_strings(out: &str) -> Vec<String> {
+    let mut res = Vec::new();
+    let mut chars = out.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '"' {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        while let Some(c) = chars.next() {
+            match c {
+                '"' => break,
+                '\\' => {
+                    let oct: String = (0..3).filter_map(|_| chars.next_if(|d| d.is_digit(8))).collect();
+                    match u8::from_str_radix(&oct, 8) {
+                        Ok(b) if !oct.is_empty() => bytes.push(b),
+                        _ => {
+                            if let Some(n) = chars.next() {
+                                bytes.extend(n.to_string().bytes());
+                            }
+                        }
+                    }
+                }
+                c => bytes.extend(c.to_string().bytes()),
+            }
+        }
+        res.push(String::from_utf8_lossy(&bytes).into_owned());
+    }
+    res
+}
+
+fn short_layout(code: &str) -> String {
+    match code {
+        "us" | "gb" => "EN".into(),
+        c => c.chars().take(3).collect::<String>().to_uppercase(),
+    }
+}
+
+/// Поточна розкладка KDE (через D-Bus: org.kde.keyboard).
+fn query_layout() -> Option<String> {
+    let call = |method: &str| {
+        let out = Command::new("busctl")
+            .args([
+                "--user",
+                "call",
+                "org.kde.keyboard",
+                "/Layouts",
+                "org.kde.KeyboardLayouts",
+                method,
+            ])
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let idx: usize = call("getLayout")?.split_whitespace().nth(1)?.parse().ok()?;
+    let list = busctl_strings(&call("getLayoutsList")?);
+    Some(short_layout(list.get(idx * 3)?))
+}
+
+/// Стежить за перемиканням розкладки. Працює в KDE Plasma; деінде назва лишається порожньою.
+pub fn watch_layout() -> Arc<Mutex<Layout>> {
+    let state = Arc::new(Mutex::new(Layout::default()));
+    let st = state.clone();
+    let update = move |st: &Mutex<Layout>| {
+        if let Some(name) = query_layout() {
+            let mut l = st.lock().unwrap();
+            if l.name != name {
+                l.name = name;
+                l.seq += 1;
+            }
+        }
+    };
+    std::thread::spawn(move || loop {
+        update(&st);
+        let child = Command::new("busctl")
+            .args([
+                "--user",
+                "monitor",
+                "--json=short",
+                "--match",
+                "type='signal',interface='org.kde.KeyboardLayouts'",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn();
+        let Ok(mut child) = child else {
+            std::thread::sleep(Duration::from_secs(60));
+            continue;
+        };
+        if let Some(out) = child.stdout.take() {
+            for _signal in BufReader::new(out).lines().map_while(Result::ok) {
+                update(&st);
+            }
+        }
+        let _ = child.wait();
+        std::thread::sleep(Duration::from_secs(10));
+    });
+    state
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -177,6 +406,15 @@ pub fn translit(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::translit;
+
+    #[test]
+    fn busctl_output() {
+        let out = r#"a(sss) 2 "us" "" "English" "ua" "" "\320\243\320\272\321\200""#;
+        let v = super::busctl_strings(out);
+        assert_eq!(v, ["us", "", "English", "ua", "", "Укр"]);
+        assert_eq!(super::short_layout("us"), "EN");
+        assert_eq!(super::short_layout("ua"), "UA");
+    }
 
     #[test]
     fn ukrainian() {

@@ -4,8 +4,8 @@
 
 **Живі OLED-екрани для розділеної клавіатури Corne**
 
-Годинник і завантаження комп'ютера, поточний трек, 15 анімацій, свої картинки й GIF,
-малювання прямо на екрані — все це з комп'ютера через USB, без перепрошивки.
+Годинник, температури й батарея, розкладка UA/EN, спектр музики, котик-барабанщик, 19 анімацій,
+свої картинки й GIF, малювання прямо на екрані — все це з комп'ютера через USB.
 
 [![CI](https://github.com/OlexiyOdarchuk/corne-hud/actions/workflows/ci.yml/badge.svg)](https://github.com/OlexiyOdarchuk/corne-hud/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/Rust-1.88+-dea584?logo=rust&logoColor=white)](https://www.rust-lang.org)
@@ -13,7 +13,7 @@
 ![Firmware](https://img.shields.io/badge/firmware-Vial%20%2F%20QMK-7a5cc7)
 [![License: MIT](https://img.shields.io/badge/license-MIT-3da639)](LICENSE)
 
-<img src="docs/media/presets.gif" alt="15 заготовок на екрані 128×32" width="808">
+<img src="docs/media/presets.gif" alt="Заготовки на екрані 128×32" width="808">
 
 </div>
 
@@ -23,6 +23,7 @@
 
 - [Можливості](#можливості)
 - [Вікно](#вікно)
+- [Дані з комп'ютера](#дані-з-компютера)
 - [Малювання](#малювання)
 - [Вбудовані режими](#вбудовані-режими)
 - [Як це працює](#як-це-працює)
@@ -37,10 +38,14 @@
 |  |  |
 |---|---|
 | 🖥️ **Режим кожного екрана** | статус, корабель, вихованець, еквалайзер, годинник/CPU/музика, картинка — окремо для кожної половини |
-| ✨ **15 заготовок** | свій текст (будь-якою мовою), аналоговий годинник, матриця, вогонь, плазма, гра «Життя», сніг, зоряний тунель, тунель, осцилограф, прапор, серце з кардіограмою, пінг-понг, лабіринт, напис, що відбивається |
+| ✨ **19 заготовок** | свій текст (будь-якою мовою), температури й батарея, спектр і хвиля звуку, Bongo-кіт, аналоговий годинник, матриця, вогонь, плазма, гра «Життя», сніг, зоряний тунель, тунель, осцилограф, прапор, серце з кардіограмою, пінг-понг, лабіринт, напис, що відбивається |
+| ⌨️ **Розкладка** | після перемикання мови на екрані на мить з'являється EN / UA |
+| 🎵 **Звук** | справжній спектр і хвиля того, що грає на комп'ютері |
+| 🐱 **Bongo-кіт** | б'є лапками з кожним натисканням і показує швидкість друку |
+| 🌡️ **Датчики** | температура процесора й відеокарти (або SSD), завантаження, RAM, заряд батареї |
 | 🎨 **Малювання** | олівець, фігури, заливка, текст, кадри анімації, 15 ефектів, малювання наживо просто на клавіатурі |
 | 🖼️ **Картинки й GIF** | PNG, JPG, GIF, BMP, WebP; розсіювання для півтонів, поріг, інверсія, кадрування |
-| ⏱️ **Годинник і ПК** | час, завантаження CPU і RAM, назва треку з будь-якого MPRIS-плеєра |
+| ⏱️ **Годинник і трек** | час, завантаження CPU і RAM, назва треку з будь-якого MPRIS-плеєра |
 | 📺 **Потік кадрів** | будь-що 128×32 зі stdin: відео через `ffmpeg`, свої генератори, ігри |
 | ⌨️ **Без вікна** | фонова служба тримає екрани живими, а всі дії доступні з терміналу |
 | 🪶 **Легкий** | Rust; служба з анімацією «Вогонь» — близько 0,4 % CPU і 6 МБ RAM |
@@ -50,6 +55,21 @@
 Три вкладки: режими екранів із живим переглядом заготовок, малювання, свої картинки й GIF.
 
 <img src="docs/media/screenshot-screens.png" alt="Вкладка «Екрани й заготовки»" width="840">
+
+## Дані з комп'ютера
+
+| | |
+|:---:|:---:|
+| <img src="docs/media/bongo.gif" width="384"><br>**Bongo-кіт** — лапки б'ють з кожним натисканням, зліва швидкість друку, без дії засинає | <img src="docs/media/spectrum.gif" width="384"><br>**Спектр звуку** — 32 смуги від 40 Гц до 16 кГц, автопідсилення (на демо — тестовий сигнал) |
+
+- **Розкладка.** Після перемикання мови на екрані на 0,8 с з'являється `EN`, `UA` тощо, потім повертається
+  попередній режим. Працює в KDE Plasma (D-Bus `org.kde.keyboard`). У вікні можна вимкнути показ або вибрати половину.
+  Поверх вбудованих режимів — з прошивкою протоколу 2 (папка `firmware/`); зі старішою — лише на екрані з картинкою чи заготовкою.
+- **Звук** захоплюється з виходу за замовчуванням через `parec` або `pw-record` (PipeWire / PulseAudio)
+  і лише поки увімкнена звукова заготовка.
+- **Котик** читає з `/dev/input` лише факт натискання, без кодів клавіш. Потрібна група `input`
+  або правило udev з `packaging/99-corne.rules`, яке відкриває доступ тільки до Corne.
+- **Датчики:** `coretemp` / `k10temp` / `zenpower`, відеокарта `amdgpu` / `nouveau` (якщо немає — SSD `nvme`), батарея з `/sys/class/power_supply`.
 
 ## Малювання
 
@@ -109,14 +129,16 @@ flowchart LR
 
 ### 2. Програма
 
-Потрібні Linux і [Rust](https://rustup.rs) 1.88+. Необов'язково: `playerctl` (назва треку), `fontconfig`
-з будь-яким шрифтом Sans (текст у заготовках і малюванні).
+Потрібні Linux і [Rust](https://rustup.rs) 1.88+. Необов'язково: `playerctl` (назва треку), `parec` або `pw-record`
+(спектр звуку), `busctl` і KDE Plasma (розкладка), `fontconfig` з будь-яким шрифтом Sans (текст у заготовках і малюванні).
 
 ```sh
 cargo install --git https://github.com/OlexiyOdarchuk/corne-hud
 ```
 
 ### 3. Доступ до клавіатури без root
+
+Правило дає доступ до Raw HID (екрани) і до натискань саме Corne (для котика):
 
 ```sh
 sudo install -Dm644 packaging/99-corne.rules /etc/udev/rules.d/99-corne.rules
@@ -183,19 +205,23 @@ src/
   gui.rs        вікно
   paint.rs      вкладка малювання
   draw.rs       фігури, кадри, ефекти анімації
-  presets.rs    15 заготовок
+  presets.rs    заготовки-анімації
+  live.rs       заготовки з даними: звук, котик, датчики
+  audio.rs      захоплення звуку і спектр (FFT)
+  keys.rs       натискання для котика
+  pixfont.rs    піксельний шрифт 3×5
   daemon.rs     фонова служба
   device.rs     hidraw: пошук клавіатури, передача кадрів
   ipc.rs        запити між вікном/командами і службою
   oled.rs       формат кадру, перетворення картинок, PNG/GIF
   media.rs      GIF для цього README (corne-hud docs-media docs/media)
-  sysinfo.rs    CPU, RAM, трек
+  sysinfo.rs    CPU, RAM, температури, батарея, трек, розкладка
 firmware/       прошивка Vial (QMK) і симулятор екранів
 packaging/      служба systemd, ярлик, правило udev
 docs/media/     GIF і знімки для цього README
 ```
 
-Перевірка: `cargo test` (фігури, заливка, ефекти, історія змін, заготовки).
+Перевірка: `cargo test` (фігури, заливка, ефекти, історія змін, заготовки, FFT, розбір D-Bus).
 
 ## Ліцензія
 
@@ -206,8 +232,10 @@ docs/media/     GIF і знімки для цього README
 ## In English
 
 **corne-hud** drives the two 128×32 OLED screens of a Corne split keyboard from a Linux PC over Raw HID:
-pick a built-in mode per half, show pictures and GIFs, run 15 live animations, stream any video through `ffmpeg`,
-display the clock, CPU/RAM load and the current track, and **draw** on the screen with a pixel editor
+pick a built-in mode per half, show pictures and GIFs, run 19 live animations (including a real audio spectrum,
+a Bongo cat that reacts to your typing and a temperature/battery dashboard), flash the keyboard layout (EN/UA)
+on every switch, stream any video through `ffmpeg`, display the clock, CPU/RAM load and the current track,
+and **draw** on the screen with a pixel editor
 that supports frames, onion skin, 15 animation effects and live preview on the keyboard.
 A lightweight Rust daemon keeps the screens alive; the egui window and the CLI talk to it over a Unix socket.
 It needs the bundled Vial/QMK firmware ([`firmware/`](firmware/README.md)); the wire format is in [PROTOCOL.md](PROTOCOL.md).

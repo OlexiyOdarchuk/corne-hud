@@ -111,6 +111,27 @@ pub enum Request {
         id: String,
         text: String,
     },
+    /// Налаштування служби.
+    Settings {
+        settings: Settings,
+    },
+}
+
+/// Налаштування, які служба пам'ятає між запусками.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Settings {
+    /// Показувати розкладку клавіатури при перемиканні.
+    pub layout_flash: bool,
+    pub layout_target: Target,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            layout_flash: true,
+            layout_target: Target::Both,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -126,6 +147,14 @@ pub struct Status {
     /// Що зараз на «картинці» кожної половини: опис для людини.
     pub main_content: String,
     pub side_content: String,
+    /// Поточна розкладка (EN, UA…), порожньо — невідомо.
+    #[serde(default)]
+    pub layout: String,
+    /// Версія протоколу прошивки (0 — ще невідома).
+    #[serde(default)]
+    pub fw_proto: u8,
+    #[serde(default)]
+    pub settings: Settings,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

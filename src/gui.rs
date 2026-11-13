@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, RichText, Vec2};
 
-use crate::ipc::{self, Client, Request, Response, Screen, Status, Target};
+use crate::ipc::{self, Client, Request, Response, Screen, Settings, Status, Target};
 use crate::oled::{self, Anim, ConvertOpts, Fit, Source};
 use crate::paint::{self, frame_image, Painter};
 use crate::presets::{self, Gen, PRESETS};
@@ -46,6 +46,7 @@ enum Action {
     Send(Target),
     Clear(Target),
     Preset(Target, &'static str),
+    Settings(Settings),
 }
 
 /// Живий перегляд однієї заготовки у вікні.
@@ -232,6 +233,9 @@ impl App {
                     self.message = "Картинки прибрано".into();
                 }
             }
+            Action::Settings(settings) => {
+                self.call(&Request::Settings { settings });
+            }
         }
         self.poll();
     }
@@ -360,6 +364,52 @@ impl App {
             };
             if theme::toggle(ui, off, theme::with_icon(icon::POWER, label)).clicked() {
                 actions.push(Action::SetOff(!off));
+            }
+        });
+
+        ui.add_space(12.0);
+        theme::card(ui, |ui| {
+            theme::title(
+                ui,
+                icon::TRANSLATE,
+                "Розкладка на екрані",
+                Some("Після перемикання мови на екрані на мить з'являється EN, UA тощо."),
+            );
+            let mut set = status.settings.clone();
+            ui.horizontal_wrapped(|ui| {
+                let label = if set.layout_flash {
+                    "Показувати"
+                } else {
+                    "Не показувати"
+                };
+                if theme::toggle(ui, set.layout_flash, theme::with_icon(icon::KEYBOARD, label)).clicked() {
+                    set.layout_flash = !set.layout_flash;
+                }
+                ui.add_space(8.0);
+                ui.label(RichText::new("на").color(theme::WEAK));
+                for (t, label) in TARGETS {
+                    ui.add_enabled_ui(set.layout_flash, |ui| ui.radio_value(&mut set.layout_target, t, label));
+                }
+            });
+            let now = if status.layout.is_empty() {
+                "Поточна розкладка невідома: показ працює в KDE Plasma.".to_string()
+            } else {
+                format!("Зараз: {}", status.layout)
+            };
+            ui.label(RichText::new(now).size(12.5).color(theme::WEAK));
+            if status.keyboard && status.fw_proto == 1 {
+                ui.label(
+                    RichText::new(theme::with_icon(
+                        icon::WARNING_CIRCLE,
+                        "Зі старою прошивкою розкладка видна лише на екрані з картинкою чи заготовкою. \
+                         Нова прошивка показує її поверх будь-якого режиму.",
+                    ))
+                    .size(12.5)
+                    .color(theme::WARN),
+                );
+            }
+            if set != status.settings {
+                actions.push(Action::Settings(set));
             }
         });
 

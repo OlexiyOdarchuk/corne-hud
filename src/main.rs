@@ -1,11 +1,15 @@
+mod audio;
 mod daemon;
 mod device;
 mod draw;
 mod gui;
 mod ipc;
+mod keys;
+mod live;
 mod media;
 mod oled;
 mod paint;
+mod pixfont;
 mod presets;
 mod sysinfo;
 mod theme;
@@ -151,6 +155,17 @@ fn print_status(s: &ipc::Status) {
     println!("Друга половина: {} | картинка: {}", name(s.side_screen), s.side_content);
     if s.screens_off {
         println!("Екрани вимкнені");
+    }
+    if !s.layout.is_empty() {
+        let shown = if s.settings.layout_flash {
+            "показується при перемиканні"
+        } else {
+            "не показується"
+        };
+        println!("Розкладка: {} ({shown})", s.layout);
+    }
+    if s.keyboard && s.fw_proto == 1 {
+        println!("Прошивка протоколу 1: розкладка видна лише на екранах із картинкою чи заготовкою");
     }
 }
 

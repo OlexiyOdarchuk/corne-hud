@@ -29,6 +29,26 @@ pub const PRESETS: &[Preset] = &[
         uses_text: true,
     },
     Preset {
+        id: "system",
+        label: "Температури й батарея",
+        uses_text: false,
+    },
+    Preset {
+        id: "spectrum",
+        label: "Спектр звуку",
+        uses_text: false,
+    },
+    Preset {
+        id: "scope",
+        label: "Хвиля звуку",
+        uses_text: false,
+    },
+    Preset {
+        id: "bongo",
+        label: "Bongo-кіт",
+        uses_text: false,
+    },
+    Preset {
         id: "clock",
         label: "Аналоговий годинник",
         uses_text: false,
@@ -114,6 +134,10 @@ pub fn make(id: &str, text: &str) -> Option<Box<dyn Gen>> {
     };
     Some(match id {
         "text" => Box::new(TextScroll { text }),
+        "system" => Box::new(crate::live::System::new()),
+        "spectrum" => Box::new(crate::live::Spectrum::new()),
+        "scope" => Box::new(crate::live::Scope::new()),
+        "bongo" => Box::new(crate::live::Bongo::new()),
         "clock" => Box::new(Clock),
         "matrix" => Box::new(Matrix::new()),
         "fire" => Box::new(Fire::new()),
