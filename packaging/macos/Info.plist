@@ -34,6 +34,10 @@
   <string>11.0</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Corne HUD reads the BlackHole loopback device to draw the audio spectrum on the keyboard screen.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Corne HUD asks Spotify or Music for the current track to show it on the keyboard screen.</string>
   <key>NSHumanReadableCopyright</key>
   <string>MIT License</string>
 </dict>

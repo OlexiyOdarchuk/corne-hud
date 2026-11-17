@@ -158,6 +158,15 @@ impl Painter {
         }
     }
 
+    /// Приклад для знімків документації замість збереженого малюнка.
+    pub fn demo() -> Self {
+        let mut p = Self::new();
+        p.doc = Doc::default();
+        p.doc.frames = vec![crate::media::sample()];
+        p.doc.effect = crate::draw::Effect::Sparkle;
+        p
+    }
+
     pub fn save(&mut self) {
         if self.dirty && self.doc.save(&Doc::path()).is_ok() {
             self.dirty = false;

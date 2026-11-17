@@ -64,11 +64,11 @@ Windows/macOS setups are very welcome.
 |---|:---:|:---:|:---:|
 | Screen modes, pictures, GIFs, drawing, presets, frame stream | ✅ | ✅ | ✅ |
 | Clock, CPU and RAM load | ✅ | ✅ | ✅ |
-| Layout flash | ✅ KDE Plasma | ✅ | — |
-| Track title | ✅ MPRIS | ✅ system media | — |
-| Audio spectrum and waveform | ✅ PipeWire / PulseAudio | ✅ WASAPI | — |
-| Bongo cat reacting to keypresses | ✅ | ✅ | — |
-| Battery | ✅ | ✅ | — |
+| Layout flash | ✅ KDE Plasma | ✅ | ✅ |
+| Track title | ✅ MPRIS | ✅ system media | ✅ Spotify, Music |
+| Audio spectrum and waveform | ✅ PipeWire / PulseAudio | ✅ WASAPI | ✅ via [BlackHole](https://github.com/ExistentialAudio/BlackHole) |
+| Bongo cat reacting to keypresses | ✅ | ✅ | ✅ Input Monitoring |
+| Battery | ✅ | ✅ | ✅ |
 | CPU / GPU temperatures | ✅ | — | — |
 | Pauses while Vial is open | ✅ | — | — |
 
@@ -78,7 +78,7 @@ Issues and pull requests for the missing pieces are very welcome.
 
 Three tabs: screen modes with a live preview of every preset, drawing, and your own pictures and GIFs.
 
-<img src="docs/media/screenshot-screens.png" alt="Screens & presets tab" width="840">
+<img src="docs/media/screenshot-screens-en.png" alt="Screens & presets tab" width="840">
 
 ## Data from your computer
 
@@ -91,19 +91,24 @@ Three tabs: screen modes with a live preview of every preset, drawing, and your 
   It is drawn over the built-in modes with protocol 2 firmware (the `firmware/` folder); with older firmware —
   only on a screen showing a picture or preset.
 - **Sound** is captured from the default output, and only while a sound preset is on: via `parec` or `pw-record`
-  (PipeWire / PulseAudio) on Linux, via WASAPI loopback on Windows.
+  (PipeWire / PulseAudio) on Linux, via WASAPI loopback on Windows. macOS does not let apps record system audio
+  directly, so install [BlackHole 2ch](https://github.com/ExistentialAudio/BlackHole), create a *Multi-Output Device*
+  with your speakers and BlackHole in *Audio MIDI Setup* and make it the output; corne-hud finds BlackHole by itself
+  (macOS asks for microphone access once).
 - **The cat** only counts keypresses and their timing, never which keys. On Linux it reads `/dev/input` and needs
   the `input` group or the udev rule from `packaging/70-corne-hud.rules`, which grants access to the Corne only.
   On Windows it uses a low-level keyboard hook (no admin rights needed); it does not see keys typed into
-  windows running as administrator.
-- **Track title** comes from any MPRIS player via `playerctl` on Linux and from the system media controls on Windows
-  (the same player shown next to the volume flyout).
+  windows running as administrator. On macOS it needs *Input Monitoring* permission (System Settings → Privacy & Security),
+  macOS asks for it the first time.
+- **Track title** comes from any MPRIS player via `playerctl` on Linux, from the system media controls on Windows
+  (the same player shown next to the volume flyout) and from Spotify or Music on macOS (macOS asks once to allow it).
 - **Sensors:** `coretemp` / `k10temp` / `zenpower`, GPU `amdgpu` / `nouveau` (otherwise the `nvme` SSD), battery from `/sys/class/power_supply`.
-  On Windows the preset shows CPU load, RAM and battery: temperatures there need admin rights or a driver.
+  On Windows and macOS the preset shows CPU load, RAM and battery: temperatures there need admin rights or a driver.
+- **Layout** on macOS is read from the input source settings (`com.apple.HIToolbox`).
 
 ## Drawing
 
-<img src="docs/media/screenshot-draw.png" alt="Drawing tab" width="840">
+<img src="docs/media/screenshot-draw-en.png" alt="Drawing tab" width="840">
 
 - **Tools:** pencil `B`, eraser `E`, line `L`, rectangle `R`, oval `O`, fill `F`, text `T`.
   The right mouse button does the opposite: the pencil erases, the fill fills with black.
@@ -299,6 +304,7 @@ docs/media/     GIFs and screenshots for this README
 ```
 
 Tests: `cargo test` (shapes, fill, effects, edit history, presets, FFT, D-Bus parsing, translations).
+Window screenshots for this README: `docs/screenshots.sh` (renders in a hidden nested KWin).
 Releases are built by [`.github/workflows/release.yml`](.github/workflows/release.yml) when a `v*` tag is pushed.
 
 ## License

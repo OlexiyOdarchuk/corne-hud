@@ -28,7 +28,7 @@ pub fn run(draw: bool) -> Result<(), String> {
                 eframe::icon_data::from_png_bytes(include_bytes!("../packaging/icons/corne-hud-256.png"))
                     .unwrap_or_default(),
             )
-            .with_inner_size([840.0, 900.0])
+            .with_inner_size(shot_size().unwrap_or([840.0, 900.0]))
             .with_min_inner_size([620.0, 560.0])
             .with_drag_and_drop(true),
         ..Default::default()
@@ -79,6 +79,15 @@ struct App {
     presets_drawn: Option<Instant>,
     tab: Tab,
     painter: Painter,
+    /// `CORNE_HUD_SCREENSHOT=file.png`: зняти вікно для документації й закритися.
+    shot: Option<(PathBuf, u32)>,
+}
+
+/// Розмір вікна для знімка: `CORNE_HUD_SCREENSHOT_SIZE=840x1000`.
+fn shot_size() -> Option<[f32; 2]> {
+    let v = std::env::var("CORNE_HUD_SCREENSHOT_SIZE").ok()?;
+    let (w, h) = v.split_once('x')?;
+    Some([w.parse().ok()?, h.parse().ok()?])
 }
 
 fn make_views(text: &str) -> Vec<PresetView> {
@@ -98,6 +107,7 @@ impl App {
             Err(e) => (None, e),
         };
         let text = presets::default_text();
+        let shot = std::env::var_os("CORNE_HUD_SCREENSHOT").map(|p| (PathBuf::from(p), 0));
         Self {
             client,
             status: None,
@@ -116,7 +126,12 @@ impl App {
             presets_start: Instant::now(),
             presets_drawn: None,
             tab: if draw { Tab::Draw } else { Tab::Screens },
-            painter: Painter::new(),
+            painter: if shot.is_some() {
+                Painter::demo()
+            } else {
+                Painter::new()
+            },
+            shot,
         }
     }
 
@@ -317,6 +332,7 @@ impl App {
         };
         let mut chosen = current.clone();
         egui::ComboBox::from_id_salt("lang")
+            .width(120.0)
             .selected_text(theme::with_icon(icon::GLOBE, &name(&current)))
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut chosen, String::new(), t!("lang.system"));
@@ -440,9 +456,7 @@ impl App {
                     ui.add_enabled_ui(set.layout_flash, |ui| ui.radio_value(&mut set.layout_target, t, label));
                 }
             });
-            let now = if cfg!(target_os = "macos") {
-                t!("layout.unsupported").to_string()
-            } else if status.layout.is_empty() {
+            let now = if status.layout.is_empty() {
                 t!("layout.unknown").to_string()
             } else {
                 t!("layout.now", layout = status.layout).to_string()
@@ -628,8 +642,37 @@ impl App {
     }
 }
 
+impl App {
+    /// Режим знімка для документації: за ~2 с знімає власне вікно, зберігає PNG і закривається.
+    fn screenshot(&mut self, ctx: &egui::Context) {
+        let Some((path, frames)) = &mut self.shot else { return };
+        *frames += 1;
+        if *frames == 40 {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+        }
+        let image = ctx.input(|i| {
+            i.raw.events.iter().find_map(|e| match e {
+                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                _ => None,
+            })
+        });
+        if let Some(img) = image {
+            let [w, h] = img.size;
+            let bytes: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
+            if let Some(buf) = image::RgbaImage::from_raw(w as u32, h as u32, bytes) {
+                if let Err(e) = buf.save(&*path) {
+                    eprintln!("corne-hud: {}: {e}", path.display());
+                }
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        ctx.request_repaint_after(Duration::from_millis(50));
+    }
+}
+
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.screenshot(ctx);
         if self.last_poll.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
             self.last_poll = Some(Instant::now());
             self.poll();
@@ -735,6 +778,8 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.painter.save();
+        if self.shot.is_none() {
+            self.painter.save();
+        }
     }
 }

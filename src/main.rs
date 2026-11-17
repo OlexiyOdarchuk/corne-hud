@@ -145,6 +145,8 @@ fn print_status(s: &ipc::Status) {
         println!("{}", t!("cli.st_paused"));
     } else if s.keyboard {
         println!("{}", t!("cli.st_connected"));
+    } else if s.error.is_empty() {
+        println!("{}", t!("cli.st_disconnected"));
     } else {
         println!("{}", t!("cli.st_not_found", err = s.error));
     }

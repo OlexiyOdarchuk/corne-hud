@@ -2,10 +2,11 @@
 //!
 //! Linux: читає `/dev/input/*-event-kbd` (потрібна група `input` або правило udev з packaging/).
 //! Windows: низькорівневий хук клавіатури, без прав адміністратора.
+//! macOS: Quartz event tap лише для читання; потрібен дозвіл «Моніторинг вводу».
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use std::fs::File;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
@@ -27,17 +28,19 @@ struct Watcher {
     access: AtomicU8,
     /// Час останніх натискань — для швидкості друку.
     recent: Mutex<Vec<Instant>>,
-    #[cfg_attr(windows, allow(dead_code))]
+    #[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
     open: Mutex<Vec<PathBuf>>,
 }
 
 fn watcher() -> &'static Watcher {
     static W: OnceLock<Watcher> = OnceLock::new();
     W.get_or_init(|| {
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         std::thread::spawn(scan_loop);
         #[cfg(windows)]
         std::thread::spawn(hook_loop);
+        #[cfg(target_os = "macos")]
+        std::thread::spawn(tap_loop);
         Watcher {
             presses: AtomicU64::new(0),
             access: AtomicU8::new(0),
@@ -125,7 +128,93 @@ fn hook_loop() {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn tap_loop() {
+    use std::ffi::c_void;
+    use std::sync::atomic::AtomicPtr;
+
+    type Callback = extern "C" fn(*mut c_void, u32, *mut c_void, *mut c_void) -> *mut c_void;
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventTapCreate(
+            tap: u32,
+            place: u32,
+            options: u32,
+            events: u64,
+            callback: Callback,
+            user_info: *mut c_void,
+        ) -> *mut c_void;
+        fn CGEventTapEnable(tap: *mut c_void, enable: bool);
+        fn CGEventGetIntegerValueField(event: *mut c_void, field: u32) -> i64;
+        fn CGPreflightListenEventAccess() -> bool;
+        fn CGRequestListenEventAccess() -> bool;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFMachPortCreateRunLoopSource(alloc: *const c_void, port: *mut c_void, order: isize) -> *mut c_void;
+        fn CFRunLoopGetCurrent() -> *mut c_void;
+        fn CFRunLoopAddSource(rl: *mut c_void, source: *mut c_void, mode: *const c_void);
+        fn CFRunLoopRun();
+        static kCFRunLoopCommonModes: *const c_void;
+    }
+
+    const SESSION_TAP: u32 = 1; // kCGSessionEventTap
+    const HEAD_INSERT: u32 = 0; // kCGHeadInsertEventTap
+    const LISTEN_ONLY: u32 = 1; // kCGEventTapOptionListenOnly
+    const KEY_DOWN: u32 = 10; // kCGEventKeyDown
+    const AUTOREPEAT: u32 = 8; // kCGKeyboardEventAutorepeat
+    const DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
+    const DISABLED_BY_USER: u32 = 0xFFFF_FFFF;
+
+    static TAP: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+    extern "C" fn on_event(_proxy: *mut c_void, kind: u32, event: *mut c_void, _info: *mut c_void) -> *mut c_void {
+        match kind {
+            KEY_DOWN => {
+                if unsafe { CGEventGetIntegerValueField(event, AUTOREPEAT) } == 0 {
+                    record_press(watcher());
+                }
+            }
+            // Система вимикає повільні перехоплювачі; вмикаємо знову.
+            DISABLED_BY_TIMEOUT | DISABLED_BY_USER => unsafe { CGEventTapEnable(TAP.load(Ordering::Relaxed), true) },
+            _ => {}
+        }
+        event
+    }
+
+    // Без дозволу «Моніторинг вводу» перехоплювач не створиться: просимо один раз і чекаємо.
+    if !unsafe { CGPreflightListenEventAccess() } {
+        unsafe { CGRequestListenEventAccess() };
+    }
+    loop {
+        let tap = unsafe {
+            CGEventTapCreate(
+                SESSION_TAP,
+                HEAD_INSERT,
+                LISTEN_ONLY,
+                1 << KEY_DOWN,
+                on_event,
+                std::ptr::null_mut(),
+            )
+        };
+        if tap.is_null() {
+            watcher().access.store(2, Ordering::Relaxed);
+            std::thread::sleep(Duration::from_secs(5));
+            continue;
+        }
+        TAP.store(tap, Ordering::Relaxed);
+        watcher().access.store(1, Ordering::Relaxed);
+        unsafe {
+            let source = CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
+            CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
+            CFRunLoopRun();
+        }
+        return;
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn keyboards() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     for dir in ["/dev/input/by-id", "/dev/input/by-path"] {
@@ -144,7 +233,7 @@ fn keyboards() -> Vec<PathBuf> {
     out
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn scan_loop() {
     loop {
         let w = watcher();
@@ -176,7 +265,7 @@ fn scan_loop() {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn read_events(mut file: File, path: PathBuf) {
     // struct input_event на 64-бітних системах: timeval (16) + type (2) + code (2) + value (4).
     const SIZE: usize = 24;

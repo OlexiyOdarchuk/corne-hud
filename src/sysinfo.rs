@@ -1,12 +1,12 @@
 //! Дані про комп'ютер: CPU, RAM, температури, батарея, музика, розкладка клавіатури.
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use std::process::Stdio;
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use crate::platform::host_command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -162,7 +162,7 @@ pub struct Sensors {
     cpu: Option<PathBuf>,
     gpu: Option<PathBuf>,
     ssd: Option<PathBuf>,
-    #[cfg_attr(windows, allow(dead_code))]
+    #[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
     battery: Option<PathBuf>,
 }
 
@@ -194,7 +194,9 @@ impl Sensors {
         };
         #[cfg(windows)]
         let battery = windows_battery();
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        let battery = mac_battery();
+        #[cfg(not(any(windows, target_os = "macos")))]
         let battery = self.battery.as_ref().and_then(|b| {
             let cap: u8 = read_trim(&b.join("capacity"))?.parse().ok()?;
             let power = match read_trim(&b.join("status")).as_deref() {
@@ -245,7 +247,7 @@ pub struct Layout {
 }
 
 /// Рядки в лапках із виводу busctl (з восьмеричними екрануваннями UTF-8).
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
 fn busctl_strings(out: &str) -> Vec<String> {
     let mut res = Vec::new();
     let mut chars = out.chars().peekable();
@@ -276,7 +278,7 @@ fn busctl_strings(out: &str) -> Vec<String> {
     res
 }
 
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
 fn short_layout(code: &str) -> String {
     match code {
         "us" | "gb" => "EN".into(),
@@ -285,7 +287,7 @@ fn short_layout(code: &str) -> String {
 }
 
 /// Поточна розкладка KDE (через D-Bus: org.kde.keyboard).
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn query_layout() -> Option<String> {
     let call = |method: &str| {
         let out = host_command("busctl")
@@ -331,8 +333,142 @@ fn query_layout() -> Option<String> {
     })
 }
 
-/// Windows не надсилає подію про зміну розкладки іншим програмам, тож перевіряємо 4 рази на секунду.
-#[cfg(windows)]
+/// macOS: розкладка з налаштувань HIToolbox (`com.apple.keylayout.Ukrainian-PC` → UA).
+/// Через `defaults`, бо API Text Input Sources можна кликати лише з головного потоку.
+#[cfg(target_os = "macos")]
+fn query_layout() -> Option<String> {
+    let out = std::process::Command::new("defaults")
+        .args(["read", "com.apple.HIToolbox", "AppleCurrentKeyboardLayoutInputSourceID"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    mac_layout_name(String::from_utf8_lossy(&out.stdout).trim())
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn mac_layout_name(id: &str) -> Option<String> {
+    let name = id.rsplit('.').next().filter(|n| !n.is_empty())?;
+    let starts = |prefixes: &[&str]| prefixes.iter().any(|p| name.starts_with(p));
+    Some(
+        if starts(&[
+            "US",
+            "ABC",
+            "British",
+            "Australian",
+            "Canadian",
+            "Irish",
+            "Colemak",
+            "Dvorak",
+        ]) {
+            "EN".into()
+        } else if starts(&["Ukrainian"]) {
+            "UA".into()
+        } else if starts(&["Russian"]) {
+            "RU".into()
+        } else if starts(&["Belarusian"]) {
+            "BY".into()
+        } else if starts(&["German"]) {
+            "DE".into()
+        } else if starts(&["French"]) {
+            "FR".into()
+        } else if starts(&["Polish"]) {
+            "PL".into()
+        } else if starts(&["Spanish"]) {
+            "ES".into()
+        } else if starts(&["Italian"]) {
+            "IT".into()
+        } else if starts(&["Czech"]) {
+            "CZ".into()
+        } else {
+            name.chars()
+                .filter(char::is_ascii_alphabetic)
+                .take(2)
+                .collect::<String>()
+                .to_uppercase()
+        },
+    )
+}
+
+/// macOS: заряд із `pmset -g batt`, не частіше ніж раз на 15 с.
+#[cfg(target_os = "macos")]
+fn mac_battery() -> Option<(u8, Power)> {
+    use std::time::Instant;
+    type Battery = Option<(u8, Power)>;
+    static CACHE: Mutex<Option<(Instant, Battery)>> = Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap();
+    if let Some((at, v)) = *cache {
+        if at.elapsed() < Duration::from_secs(15) {
+            return v;
+        }
+    }
+    let v = std::process::Command::new("pmset")
+        .args(["-g", "batt"])
+        .output()
+        .ok()
+        .and_then(|o| parse_pmset(&String::from_utf8_lossy(&o.stdout)));
+    *cache = Some((Instant::now(), v));
+    v
+}
+
+/// ` -InternalBattery-0 (id=123)<TAB>85%; charging; 1:23 remaining present: true`
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn parse_pmset(out: &str) -> Option<(u8, Power)> {
+    let line = out.lines().find(|l| l.contains("InternalBattery"))?;
+    let (before, after) = line.split_once('%')?;
+    let cap: u8 = before.rsplit(|c: char| !c.is_ascii_digit()).next()?.parse().ok()?;
+    let state = after.split(';').nth(1).unwrap_or("").trim();
+    let power = match state {
+        s if s.starts_with("charging") || s.starts_with("finishing") => Power::Charging,
+        s if s.starts_with("charged") => Power::Full,
+        s if s.starts_with("AC attached") => Power::Idle,
+        _ => Power::Discharging,
+    };
+    Some((cap.min(100), power))
+}
+
+/// macOS: трек зі Spotify або Music через AppleScript (першого разу macOS попросить дозвіл на керування).
+/// Загального API «що зараз грає» macOS стороннім програмам не дає.
+#[cfg(target_os = "macos")]
+pub fn watch_music() -> Arc<Mutex<Option<Track>>> {
+    use std::process::{Command, Stdio};
+
+    let state = Arc::new(Mutex::new(None));
+    let st = state.clone();
+    std::thread::spawn(move || loop {
+        let running = |name: &str| {
+            Command::new("pgrep")
+                .args(["-x", name])
+                .stdout(Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+        };
+        let app = ["Spotify", "Music"].into_iter().find(|a| running(a));
+        let track = app.and_then(|app| {
+            let script = format!(
+                "tell application \"{app}\" to (player state as text) & tab & (artist of current track) & tab & (name of current track)"
+            );
+            let out = Command::new("osascript")
+                .args(["-e", &script])
+                .stderr(Stdio::null())
+                .output()
+                .ok()?;
+            let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            let mut parts = line.splitn(3, '\t');
+            let playing = match parts.next()? {
+                "playing" => Some(true),
+                "paused" => Some(false),
+                _ => None,
+            };
+            make_track(playing, parts.next().unwrap_or(""), parts.next().unwrap_or(""))
+        });
+        *st.lock().unwrap() = track;
+        std::thread::sleep(Duration::from_secs(2));
+    });
+    state
+}
+
+/// Windows і macOS не надсилають іншим програмам подію про зміну розкладки, тож перевіряємо кілька разів на секунду.
+#[cfg(any(windows, target_os = "macos"))]
 pub fn watch_layout() -> Arc<Mutex<Layout>> {
     let state = Arc::new(Mutex::new(Layout::default()));
     let st = state.clone();
@@ -344,13 +480,14 @@ pub fn watch_layout() -> Arc<Mutex<Layout>> {
                 l.seq += 1;
             }
         }
-        std::thread::sleep(Duration::from_millis(250));
+        // У macOS це запуск `defaults`, тож рідше.
+        std::thread::sleep(Duration::from_millis(if cfg!(windows) { 250 } else { 500 }));
     });
     state
 }
 
 /// Стежить за перемиканням розкладки. Працює в KDE Plasma; деінде назва лишається порожньою.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn watch_layout() -> Arc<Mutex<Layout>> {
     let state = Arc::new(Mutex::new(Layout::default()));
     let st = state.clone();
@@ -455,7 +592,7 @@ pub fn watch_music() -> Arc<Mutex<Option<Track>>> {
 
 /// Стежить за плеєрами через `playerctl --follow` (MPRIS: браузер, Spotify, mpv…).
 /// Якщо playerctl немає — просто нічого не показує.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn watch_music() -> Arc<Mutex<Option<Track>>> {
     let state = Arc::new(Mutex::new(None));
     let st = state.clone();
@@ -562,7 +699,7 @@ pub fn translit(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::translit;
+    use super::{mac_layout_name, parse_pmset, translit, Power};
 
     #[test]
     fn busctl_output() {
@@ -578,5 +715,30 @@ mod tests {
         assert_eq!(translit("Океан Ельзи — Обійми"), "Okean Elzy - Obiimy");
         assert_eq!(translit("Щедрик"), "Shchedryk");
         assert_eq!(translit("abc 123"), "abc 123");
+    }
+    #[test]
+    fn mac_layouts() {
+        assert_eq!(
+            mac_layout_name("com.apple.keylayout.Ukrainian-PC").as_deref(),
+            Some("UA")
+        );
+        assert_eq!(mac_layout_name("com.apple.keylayout.ABC").as_deref(), Some("EN"));
+        assert_eq!(
+            mac_layout_name("com.apple.keylayout.USInternational-PC").as_deref(),
+            Some("EN")
+        );
+        assert_eq!(mac_layout_name("com.apple.keylayout.Norwegian").as_deref(), Some("NO"));
+        assert_eq!(mac_layout_name(""), None);
+    }
+
+    #[test]
+    fn pmset() {
+        let out = "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=4653)\t85%; discharging; 4:20 remaining present: true\n";
+        assert_eq!(parse_pmset(out), Some((85, Power::Discharging)));
+        let out = " -InternalBattery-0 (id=1)\t100%; charged; 0:00 remaining present: true";
+        assert_eq!(parse_pmset(out), Some((100, Power::Full)));
+        let out = " -InternalBattery-0 (id=1)\t80%; AC attached; not charging present: true";
+        assert_eq!(parse_pmset(out), Some((80, Power::Idle)));
+        assert_eq!(parse_pmset("Now drawing from 'AC Power'\n"), None);
     }
 }

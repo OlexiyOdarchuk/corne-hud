@@ -53,8 +53,7 @@ layout:
   hint: "After switching the input language, EN, UA, etc. briefly appear on the screen."
   show: "Show"
   hide: "Don't show"
-  unknown: "Current layout unknown: this works in KDE Plasma."
-  unsupported: "Layout display works on Linux (KDE Plasma) and Windows."
+  unknown: "Current layout unknown (on Linux this works in KDE Plasma)."
   now: "Now: %{layout}"
   old_fw: "With the old firmware the layout is only visible on a screen showing a picture or preset. The new firmware shows it over any mode."
 
@@ -64,7 +63,6 @@ presets:
   text_label: "Text:"
   text_hint: "for “Custom text” and “Bouncing text”"
   default_text: "Hello, Corne!"
-  linux_only: "Linux only"
 
 preset:
   text: "Custom text"
@@ -276,6 +274,7 @@ cli:
   st_paused: "Keyboard: connected, paused — another program (Vial) opened it"
   st_connected: "Keyboard: connected"
   st_not_found: "Keyboard: not connected (%{err})"
+  st_disconnected: "Keyboard: not connected"
   st_main: "USB half: %{mode} | picture: %{content}"
   st_side: "Other half: %{mode} | picture: %{content}"
   st_off: "Screens are off"

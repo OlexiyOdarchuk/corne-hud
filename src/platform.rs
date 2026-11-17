@@ -20,13 +20,13 @@ pub fn config_dir() -> PathBuf {
     base.join("corne-hud")
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 /// Inside Flatpak the host tools (playerctl, busctl, parec…) are reached through `flatpak-spawn --host`.
 fn in_flatpak() -> bool {
     cfg!(target_os = "linux") && std::path::Path::new("/.flatpak-info").exists()
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 /// A command for a program installed on the system (not shipped with corne-hud).
 pub fn host_command(program: &str) -> Command {
     if in_flatpak() {

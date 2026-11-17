@@ -1,20 +1,21 @@
 //! Звук, що грає на комп'ютері: спектр і хвиля для заготовок.
 //!
 //! Захоплення — з монітора виходу за замовчуванням через `parec` (PipeWire/PulseAudio)
-//! або `pw-record`; у Windows — WASAPI loopback. Працює, лише поки існує хоч одна заготовка, якій потрібен звук.
+//! або `pw-record`; у Windows — WASAPI loopback; у macOS — віртуальний пристрій BlackHole
+//! (без нього macOS не дає записати системний звук). Працює, лише поки існує хоч одна заготовка, якій потрібен звук.
 
 use std::f32::consts::PI;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use std::io::Read;
 use std::process::Child;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 pub const BANDS: usize = 32;
 pub const WAVE: usize = 128;
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
 const RATE: usize = 48_000;
 const N: usize = 2048;
 
@@ -81,7 +82,7 @@ impl Drop for Analyzer {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn spawn_recorder() -> Option<Child> {
     let rate = RATE.to_string();
     let attempts: [(&str, Vec<&str>); 2] = [
@@ -194,7 +195,7 @@ impl Analysis {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn capture(data: Arc<Mutex<Snapshot>>, stop: Arc<AtomicBool>, slot: Arc<Mutex<Option<Child>>>) {
     let mut analysis = Analysis::new(RATE);
     while !stop.load(Ordering::Relaxed) {
@@ -229,17 +230,39 @@ fn capture(data: Arc<Mutex<Snapshot>>, stop: Arc<AtomicBool>, slot: Arc<Mutex<Op
     }
 }
 
-/// Windows: те, що грає у вихід за замовчуванням, через WASAPI loopback.
+/// Звідки брати системний звук. Windows: вихід за замовчуванням, cpal вмикає для нього loopback.
 #[cfg(windows)]
+fn loopback(host: &cpal::Host) -> Option<(cpal::Device, cpal::SupportedStreamConfig)> {
+    use cpal::traits::{DeviceTrait, HostTrait};
+    let dev = host.default_output_device()?;
+    let cfg = dev.default_output_config().ok()?;
+    Some((dev, cfg))
+}
+
+/// macOS: вхід віртуального пристрою, куди продубльовано вихід (BlackHole, Loopback, Soundflower).
+#[cfg(target_os = "macos")]
+fn loopback(host: &cpal::Host) -> Option<(cpal::Device, cpal::SupportedStreamConfig)> {
+    use cpal::traits::{DeviceTrait, HostTrait};
+    let dev = host.input_devices().ok()?.find(|d| {
+        d.description().is_ok_and(|desc| {
+            ["BlackHole", "Loopback", "Soundflower"]
+                .iter()
+                .any(|k| desc.name().contains(k))
+        })
+    })?;
+    let cfg = dev.default_input_config().ok()?;
+    Some((dev, cfg))
+}
+
+#[cfg(any(windows, target_os = "macos"))]
 fn capture(data: Arc<Mutex<Snapshot>>, stop: Arc<AtomicBool>, _slot: Arc<Mutex<Option<Child>>>) {
     use std::time::{Duration, Instant};
 
-    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    use cpal::traits::{DeviceTrait, StreamTrait};
 
     while !stop.load(Ordering::Relaxed) {
         let host = cpal::default_host();
-        let started = host.default_output_device().and_then(|dev| {
-            let cfg = dev.default_output_config().ok()?;
+        let started = loopback(&host).and_then(|(dev, cfg)| {
             let rate = cfg.sample_rate() as usize;
             let channels = cfg.channels().max(1) as usize;
             let state = Arc::new(Mutex::new((Analysis::new(rate), Instant::now())));
