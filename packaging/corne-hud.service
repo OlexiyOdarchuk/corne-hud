@@ -1,5 +1,5 @@
 [Unit]
-Description=corne-hud: екрани клавіатури Corne
+Description=Corne HUD: OLED screens of the Corne keyboard
 
 [Service]
 ExecStart=%h/.cargo/bin/corne-hud daemon

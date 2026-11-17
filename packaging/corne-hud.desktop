@@ -1,13 +1,22 @@
 [Desktop Entry]
 Type=Application
-Name=Corne — екрани
-Comment=Режими OLED-екранів, картинки й анімації
+Name=Corne HUD
+Name[uk]=Corne — екрани
+GenericName=Keyboard OLED Screens
+GenericName[uk]=OLED-екрани клавіатури
+Comment=OLED screen modes, pictures and animations for the Corne keyboard
+Comment[uk]=Режими OLED-екранів, картинки й анімації
 Exec=corne-hud gui
-Icon=input-keyboard
+Icon=io.github.OlexiyOdarchuk.CorneHud
 Terminal=false
-Categories=Utility;Settings;
+StartupNotify=true
+StartupWMClass=io.github.OlexiyOdarchuk.CorneHud
+Categories=Utility;Settings;HardwareSettings;
+Keywords=corne;keyboard;oled;qmk;vial;screen;hid;
+Keywords[uk]=corne;клавіатура;екран;oled;qmk;vial;
 Actions=draw;
 
 [Desktop Action draw]
-Name=Малювання
+Name=Draw
+Name[uk]=Малювання
 Exec=corne-hud draw

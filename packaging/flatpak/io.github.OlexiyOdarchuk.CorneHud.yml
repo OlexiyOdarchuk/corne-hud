@@ -1,0 +1,56 @@
+# Flatpak build from source.
+#
+# Offline cargo sources (generated, not committed):
+#   python3 flatpak-cargo-generator.py Cargo.lock -o packaging/flatpak/cargo-sources.json
+# (https://github.com/flatpak/flatpak-builder-tools/tree/master/cargo)
+#
+# Build locally:
+#   flatpak-builder --user --install --force-clean build-dir packaging/flatpak/io.github.OlexiyOdarchuk.CorneHud.yml
+#
+# The host still needs packaging/70-corne-hud.rules in /etc/udev/rules.d/ for keyboard access.
+id: io.github.OlexiyOdarchuk.CorneHud
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: corne-hud
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=all  # /dev/hidraw* (screens) and /dev/input (key presses for the animations)
+  - --socket=pulseaudio  # audio spectrum
+  # playerctl, busctl, parec / pw-record run on the host via flatpak-spawn --host
+  - --talk-name=org.freedesktop.Flatpak
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+modules:
+  - name: corne-hud
+    buildsystem: simple
+    build-options:
+      env:
+        CARGO_HOME: /run/build/corne-hud/cargo
+        CARGO_NET_OFFLINE: 'true'
+    build-commands:
+      - cargo --offline fetch --manifest-path Cargo.toml --verbose
+      - cargo --offline build --release --locked --verbose
+      - install -Dm755 target/release/corne-hud ${FLATPAK_DEST}/bin/corne-hud
+      - install -Dm644 packaging/corne-hud.desktop ${FLATPAK_DEST}/share/applications/${FLATPAK_ID}.desktop
+      - install -Dm644 packaging/${FLATPAK_ID}.metainfo.xml ${FLATPAK_DEST}/share/metainfo/${FLATPAK_ID}.metainfo.xml
+      - install -Dm644 packaging/icons/corne-hud.svg ${FLATPAK_DEST}/share/icons/hicolor/scalable/apps/${FLATPAK_ID}.svg
+      - |
+        for s in 256 128 64 48 32; do
+          install -Dm644 packaging/icons/corne-hud-$s.png ${FLATPAK_DEST}/share/icons/hicolor/${s}x${s}/apps/${FLATPAK_ID}.png
+        done
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - target
+          - dist
+          - firmware
+          - .flatpak-builder
+          - build-dir
+          - repo
+      - cargo-sources.json

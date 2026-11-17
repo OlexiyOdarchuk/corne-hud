@@ -1,0 +1,7 @@
+# Corne HUD udev rule.
+# The file name must sort before 73-seat-late.rules, otherwise TAG+="uaccess" has no effect.
+#
+# Corne (USB 4653:xxxx): Raw HID access for the screens without root.
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="4653", MODE="0660", TAG+="uaccess"
+# Corne key presses for the animations (this keyboard only).
+SUBSYSTEM=="input", ATTRS{idVendor}=="4653", TAG+="uaccess"

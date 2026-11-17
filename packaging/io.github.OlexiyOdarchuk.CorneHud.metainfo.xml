@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.OlexiyOdarchuk.CorneHud</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+
+  <name>Corne HUD</name>
+  <name xml:lang="uk">Corne — екрани</name>
+  <summary>Live OLED screens for the Corne split keyboard</summary>
+  <summary xml:lang="uk">Живі OLED-екрани для розділеної клавіатури Corne</summary>
+
+  <developer id="io.github.olexiyodarchuk">
+    <name>iShawyha</name>
+  </developer>
+
+  <description>
+    <p>
+      Corne HUD drives the two 128×32 OLED screens of a Corne keyboard over USB Raw HID:
+      a clock, CPU/GPU temperatures and battery, the current keyboard layout, a music spectrum,
+      a Bongo cat that taps along with your typing, 19 animations, your own pictures and GIFs,
+      and drawing directly on the keyboard screen.
+    </p>
+    <ul>
+      <li>Choose the mode of each screen half separately</li>
+      <li>Live audio spectrum and waveform of whatever is playing</li>
+      <li>Clock, CPU and RAM load and the current track from any MPRIS player</li>
+      <li>Pictures and GIFs with dithering, threshold, inversion and cropping</li>
+      <li>Pixel editor with frames, 15 effects and live drawing on the keyboard</li>
+      <li>A lightweight background service keeps the screens alive without the window</li>
+    </ul>
+    <p>
+      Requires the companion Vial/QMK firmware and a udev rule that grants access to the keyboard.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.OlexiyOdarchuk.CorneHud.desktop</launchable>
+  <provides>
+    <binary>corne-hud</binary>
+  </provides>
+
+  <url type="homepage">https://github.com/OlexiyOdarchuk/corne-hud</url>
+  <url type="bugtracker">https://github.com/OlexiyOdarchuk/corne-hud/issues</url>
+  <url type="vcs-browser">https://github.com/OlexiyOdarchuk/corne-hud</url>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>Screen modes and live presets</caption>
+      <image>https://raw.githubusercontent.com/OlexiyOdarchuk/corne-hud/main/docs/media/screenshot-screens.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Drawing with frames and effects</caption>
+      <image>https://raw.githubusercontent.com/OlexiyOdarchuk/corne-hud/main/docs/media/screenshot-draw.png</image>
+    </screenshot>
+  </screenshots>
+
+  <categories>
+    <category>Utility</category>
+    <category>Settings</category>
+    <category>HardwareSettings</category>
+  </categories>
+  <keywords>
+    <keyword>corne</keyword>
+    <keyword>keyboard</keyword>
+    <keyword>oled</keyword>
+    <keyword>qmk</keyword>
+    <keyword>vial</keyword>
+  </keywords>
+
+  <requires>
+    <display_length compare="ge">620</display_length>
+  </requires>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.3.0" date="2026-11-17">
+      <description>
+        <p>English interface, Windows and macOS builds, Linux packages (deb, rpm, AppImage, Flatpak).</p>
+      </description>
+    </release>
+    <release version="0.2.0" date="2026-11-13"/>
+  </releases>
+</component>

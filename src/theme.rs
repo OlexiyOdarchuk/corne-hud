@@ -32,15 +32,10 @@ const BOLD: &str = "bold";
 /// Файл системного шрифту з кирилицею потрібної товщини (через fontconfig).
 fn system_font(weight: &str) -> Option<Vec<u8>> {
     let pattern = format!("Inter,Noto Sans,DejaVu Sans,sans-serif:lang=uk:variable=false:weight={weight}");
-    let out = std::process::Command::new("fc-match")
-        .args(["-f", "%{file}", &pattern])
-        .output()
-        .ok()?;
-    let path = String::from_utf8_lossy(&out.stdout).into_owned();
-    if path.ends_with(".ttc") {
-        return None;
-    }
-    std::fs::read(path.trim()).ok()
+    crate::platform::font_files(&pattern, weight != "regular")
+        .into_iter()
+        .filter(|p| p.extension().is_none_or(|e| e != "ttc"))
+        .find_map(|p| std::fs::read(p).ok())
 }
 
 fn fonts() -> FontDefinitions {

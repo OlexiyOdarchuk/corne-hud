@@ -40,16 +40,21 @@ impl Tool {
         Tool::Text,
     ];
 
-    fn label(self) -> &'static str {
+    fn id(self) -> &'static str {
         match self {
-            Tool::Pencil => "Олівець",
-            Tool::Eraser => "Гумка",
-            Tool::Line => "Лінія",
-            Tool::Rect => "Прямокутник",
-            Tool::Ellipse => "Овал",
-            Tool::Bucket => "Заливка",
-            Tool::Text => "Текст",
+            Tool::Pencil => "pencil",
+            Tool::Eraser => "eraser",
+            Tool::Line => "line",
+            Tool::Rect => "rect",
+            Tool::Ellipse => "ellipse",
+            Tool::Bucket => "bucket",
+            Tool::Text => "text",
         }
+    }
+
+    fn label(self) -> String {
+        let key = format!("tool.{}", self.id());
+        t!(&key).into_owned()
     }
 
     fn icon(self) -> &'static str {
@@ -77,16 +82,9 @@ impl Tool {
     }
 
     fn hint(self) -> String {
-        let what = match self {
-            Tool::Pencil => "Малює від руки. Права кнопка миші стирає",
-            Tool::Eraser => "Стирає. Права кнопка миші малює",
-            Tool::Line => "Тягніть від початку до кінця лінії",
-            Tool::Rect => "Тягніть від кута до кута",
-            Tool::Ellipse => "Тягніть від кута до кута",
-            Tool::Bucket => "Заливає замкнену область. Права кнопка заливає чорним",
-            Tool::Text => "Клацніть, де має бути лівий верхній кут напису. Права кнопка вирізає напис",
-        };
-        format!("{what} (клавіша {:?})", self.key())
+        let key = format!("tool.{}_hint", self.id());
+        let what = t!(&key);
+        t!("tool.key", hint = what, key = format!("{:?}", self.key())).into()
     }
 }
 
@@ -253,7 +251,7 @@ impl Painter {
 
     fn import(&mut self, msg: &mut String) {
         let Some(path) = rfd::FileDialog::new()
-            .add_filter("Зображення", &["png", "jpg", "jpeg", "gif", "bmp", "webp"])
+            .add_filter(t!("picture.images"), &["png", "jpg", "jpeg", "gif", "bmp", "webp"])
             .pick_file()
         else {
             return;
@@ -268,9 +266,10 @@ impl Painter {
                     self.doc.delay_ms = anim.delays_ms[0].clamp(oled::MIN_DELAY_MS, 2000);
                 }
                 self.dirty = true;
-                *msg = format!("Відкрито: {}", path.file_name().unwrap_or_default().to_string_lossy());
+                let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                *msg = t!("msg.opened", name = name).into();
             }
-            Err(e) => *msg = format!("Не вдалося відкрити файл: {e}"),
+            Err(e) => *msg = t!("msg.open_failed", err = e).into(),
         }
     }
 
@@ -285,8 +284,8 @@ impl Painter {
             return;
         };
         *msg = match oled::save_image(&path, &anim, 4) {
-            Ok(()) => format!("Збережено: {}", path.display()),
-            Err(e) => format!("Не вдалося зберегти: {e}"),
+            Ok(()) => t!("msg.saved", path = path.display()).into(),
+            Err(e) => t!("msg.save_failed", err = e).into(),
         };
     }
 
@@ -461,26 +460,29 @@ impl Painter {
         });
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
-            if ui.button(theme::with_icon(icon::PLUS, "Новий кадр")).clicked() {
+            if ui
+                .button(theme::with_icon(icon::PLUS, &t!("paint.new_frame")))
+                .clicked()
+            {
                 self.doc.add_frame(false);
                 self.dirty = true;
             }
             if ui
-                .button(theme::with_icon(icon::COPY, "Копія кадру"))
-                .on_hover_text("Копія поточного кадру: змініть у ній щось, і вийде рух")
+                .button(theme::with_icon(icon::COPY, &t!("paint.copy_frame")))
+                .on_hover_text(t!("paint.copy_frame_hint"))
                 .clicked()
             {
                 self.doc.add_frame(true);
                 self.dirty = true;
             }
-            if ui.button(theme::with_icon(icon::TRASH, "Видалити")).clicked() {
+            if ui.button(theme::with_icon(icon::TRASH, &t!("paint.delete"))).clicked() {
                 self.doc.delete_frame();
                 self.dirty = true;
             }
             let n = self.doc.frames.len();
             if ui
                 .add_enabled(self.doc.cur > 0, egui::Button::new(icon::CARET_LEFT))
-                .on_hover_text("Посунути кадр раніше")
+                .on_hover_text(t!("paint.move_earlier"))
                 .clicked()
             {
                 self.doc.move_frame(false);
@@ -488,15 +490,15 @@ impl Painter {
             }
             if ui
                 .add_enabled(self.doc.cur + 1 < n, egui::Button::new(icon::CARET_RIGHT))
-                .on_hover_text("Посунути кадр пізніше")
+                .on_hover_text(t!("paint.move_later"))
                 .clicked()
             {
                 self.doc.move_frame(true);
                 self.dirty = true;
             }
             ui.separator();
-            ui.checkbox(&mut self.onion, "Тінь попереднього кадру")
-                .on_hover_text("Видно, де що було кадром раніше: зручно малювати рух");
+            ui.checkbox(&mut self.onion, t!("paint.onion"))
+                .on_hover_text(t!("paint.onion_hint"));
         });
     }
 
@@ -536,7 +538,7 @@ impl Painter {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             for t in Tool::ALL {
-                if theme::toggle(ui, self.tool == t, theme::with_icon(t.icon(), t.label()))
+                if theme::toggle(ui, self.tool == t, theme::with_icon(t.icon(), &t.label()))
                     .on_hover_text(t.hint())
                     .clicked()
                 {
@@ -546,21 +548,21 @@ impl Painter {
         });
         ui.horizontal_wrapped(|ui| match self.tool {
             Tool::Text => {
-                ui.label("Напис:");
+                ui.label(t!("paint.text_label"));
                 ui.add(egui::TextEdit::singleline(&mut self.text).desired_width(220.0));
                 ui.add(
                     egui::Slider::new(&mut self.text_size, 8.0..=32.0)
                         .step_by(1.0)
-                        .text("розмір"),
+                        .text(t!("paint.size")),
                 );
             }
             Tool::Bucket => {
-                ui.label(RichText::new("Клацніть усередині замкненої області").color(theme::WEAK));
+                ui.label(RichText::new(t!("paint.bucket_info")).color(theme::WEAK));
             }
             _ => {
-                ui.add(egui::Slider::new(&mut self.size, 1..=5).text("товщина"));
+                ui.add(egui::Slider::new(&mut self.size, 1..=5).text(t!("paint.thickness")));
                 if matches!(self.tool, Tool::Rect | Tool::Ellipse) {
-                    ui.checkbox(&mut self.fill, "Залита фігура");
+                    ui.checkbox(&mut self.fill, t!("paint.filled"));
                 }
             }
         });
@@ -571,7 +573,7 @@ impl Painter {
             ui.spacing_mut().item_spacing.x = 6.0;
             if ui
                 .add_enabled(self.doc.can_undo(), egui::Button::new(icon::ARROW_COUNTER_CLOCKWISE))
-                .on_hover_text("Відмінити (Ctrl+Z)")
+                .on_hover_text(t!("paint.undo"))
                 .clicked()
             {
                 self.doc.undo();
@@ -579,7 +581,7 @@ impl Painter {
             }
             if ui
                 .add_enabled(self.doc.can_redo(), egui::Button::new(icon::ARROW_CLOCKWISE))
-                .on_hover_text("Повторити (Ctrl+Shift+Z)")
+                .on_hover_text(t!("paint.redo"))
                 .clicked()
             {
                 self.doc.redo();
@@ -588,40 +590,20 @@ impl Painter {
             ui.separator();
             let mut edit: Option<FrameEdit> = None;
             let buttons: [(&str, &str, FrameFn); 8] = [
-                (icon::BROOM, "Очистити кадр", |_| [0; FB]),
-                (icon::CIRCLE_HALF, "Інвертувати", draw::inverted),
-                (
-                    icon::FLIP_HORIZONTAL,
-                    "Віддзеркалити: ліве стає правим",
-                    |f| draw::flipped(f, true),
-                ),
-                (
-                    icon::FLIP_VERTICAL,
-                    "Перевернути: верх стає низом",
-                    |f| draw::flipped(f, false),
-                ),
-                (
-                    icon::ARROW_LEFT,
-                    "Зсунути на піксель ліворуч",
-                    |f| draw::shifted(f, -1, 0),
-                ),
-                (
-                    icon::ARROW_RIGHT,
-                    "Зсунути на піксель праворуч",
-                    |f| draw::shifted(f, 1, 0),
-                ),
-                (icon::ARROW_UP, "Зсунути на піксель угору", |f| {
-                    draw::shifted(f, 0, -1)
-                }),
-                (icon::ARROW_DOWN, "Зсунути на піксель униз", |f| {
-                    draw::shifted(f, 0, 1)
-                }),
+                (icon::BROOM, "paint.clear_frame", |_| [0; FB]),
+                (icon::CIRCLE_HALF, "paint.invert", draw::inverted),
+                (icon::FLIP_HORIZONTAL, "paint.mirror", |f| draw::flipped(f, true)),
+                (icon::FLIP_VERTICAL, "paint.flip", |f| draw::flipped(f, false)),
+                (icon::ARROW_LEFT, "paint.shift_left", |f| draw::shifted(f, -1, 0)),
+                (icon::ARROW_RIGHT, "paint.shift_right", |f| draw::shifted(f, 1, 0)),
+                (icon::ARROW_UP, "paint.shift_up", |f| draw::shifted(f, 0, -1)),
+                (icon::ARROW_DOWN, "paint.shift_down", |f| draw::shifted(f, 0, 1)),
             ];
             for (i, (glyph, hint, f)) in buttons.into_iter().enumerate() {
                 if i == 4 {
                     ui.separator();
                 }
-                if ui.button(glyph).on_hover_text(hint).clicked() {
+                if ui.button(glyph).on_hover_text(t!(hint)).clicked() {
                     edit = Some(Box::new(f));
                 }
             }
@@ -631,7 +613,7 @@ impl Painter {
             }
             ui.separator();
             if theme::toggle(ui, self.grid, icon::GRID_FOUR)
-                .on_hover_text("Сітка")
+                .on_hover_text(t!("paint.grid"))
                 .clicked()
             {
                 self.grid = !self.grid;
@@ -639,7 +621,7 @@ impl Painter {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .button(icon::FILE_PLUS)
-                    .on_hover_text("Новий малюнок (можна відмінити)")
+                    .on_hover_text(t!("paint.new_drawing"))
                     .clicked()
                 {
                     self.doc.checkpoint();
@@ -647,18 +629,10 @@ impl Painter {
                     self.doc.cur = 0;
                     self.dirty = true;
                 }
-                if ui
-                    .button(icon::FLOPPY_DISK)
-                    .on_hover_text("Зберегти як PNG або GIF")
-                    .clicked()
-                {
+                if ui.button(icon::FLOPPY_DISK).on_hover_text(t!("paint.export")).clicked() {
                     self.export(msg);
                 }
-                if ui
-                    .button(icon::FOLDER_OPEN)
-                    .on_hover_text("Відкрити картинку чи GIF як основу (можна відмінити)")
-                    .clicked()
-                {
+                if ui.button(icon::FOLDER_OPEN).on_hover_text(t!("paint.import")).clicked() {
                     self.import(msg);
                 }
             });
@@ -677,7 +651,7 @@ impl Painter {
             ui.vertical(|ui| {
                 let before = (self.doc.effect, self.doc.delay_ms, self.doc.effect_ms);
                 ui.horizontal(|ui| {
-                    ui.label("Ефект");
+                    ui.label(t!("paint.effect"));
                     egui::ComboBox::from_id_salt("effect")
                         .selected_text(self.doc.effect.label())
                         .show_ui(ui, |ui| {
@@ -691,7 +665,7 @@ impl Painter {
                     ui.add(
                         egui::Slider::new(&mut ms, 50..=500)
                             .step_by(50.0)
-                            .text("мс на крок ефекту"),
+                            .text(t!("paint.effect_ms")),
                     );
                     self.doc.effect_ms = ms as u16;
                 }
@@ -700,7 +674,7 @@ impl Painter {
                     ui.add(
                         egui::Slider::new(&mut ms, 50..=2000)
                             .step_by(50.0)
-                            .text("мс на кадр малюнка"),
+                            .text(t!("paint.frame_ms")),
                     );
                     self.doc.delay_ms = ms as u16;
                 }
@@ -709,26 +683,27 @@ impl Painter {
                 }
                 let info = if n > 1 {
                     let total: u32 = self.anim.delays_ms.iter().map(|&d| d as u32).sum();
-                    format!("Кадрів на екрані: {n} · цикл {:.1} с", total as f32 / 1000.0)
+                    let secs = format!("{:.1}", total as f32 / 1000.0);
+                    t!("paint.info_anim", n = n, secs = secs).to_string()
                 } else {
-                    "Нерухома картинка".to_string()
+                    t!("paint.info_still").to_string()
                 };
                 ui.label(RichText::new(info).size(12.5).color(theme::WEAK));
             });
         });
 
         ui.add_space(8.0);
-        theme::caption(ui, "Показати на екрані");
+        theme::caption(ui, &t!("paint.show_on"));
         ui.horizontal_wrapped(|ui| {
             for (t, label) in [
-                (Target::Main, "Половина з USB"),
-                (Target::Side, "Друга половина"),
-                (Target::Both, "Обидві"),
+                (Target::Main, t!("target.main")),
+                (Target::Side, t!("target.side")),
+                (Target::Both, t!("target.both")),
             ] {
                 if theme::primary(ui, true, label).clicked() {
                     out.push((
                         ipc::show_request(t, &self.doc.anim(), true),
-                        Some("Малюнок на екрані".into()),
+                        Some(t!("msg.drawing_shown").into()),
                     ));
                     self.live = false;
                 }
@@ -737,16 +712,20 @@ impl Painter {
 
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
-            let live = theme::with_icon(icon::BROADCAST, "Малювати наживо");
+            let live = theme::with_icon(icon::BROADCAST, &t!("paint.live"));
             if theme::toggle(ui, self.live, live)
-                .on_hover_text("Кожен штрих одразу з'являється на клавіатурі: поточний кадр, без ефекту")
+                .on_hover_text(t!("paint.live_hint"))
                 .clicked()
             {
                 self.live = !self.live;
                 self.live_sent = None;
             }
-            ui.label(RichText::new("на").color(theme::WEAK));
-            for (t, label) in [(Target::Main, "USB"), (Target::Side, "другу"), (Target::Both, "обидві")] {
+            ui.label(RichText::new(t!("target.on")).color(theme::WEAK));
+            for (t, label) in [
+                (Target::Main, t!("paint.live_main")),
+                (Target::Side, t!("paint.live_side")),
+                (Target::Both, t!("paint.live_both")),
+            ] {
                 if ui.radio_value(&mut self.live_target, t, label).changed() {
                     self.live_sent = None;
                 }
@@ -759,12 +738,7 @@ impl Painter {
         let next = self.update_anim(ui.ctx());
 
         theme::card(ui, |ui| {
-            theme::title(
-                ui,
-                icon::PAINT_BRUSH,
-                "Малювання",
-                Some("Ліва кнопка миші малює, права стирає. Ctrl+Z відміняє, клавіші інструментів — у підказках."),
-            );
+            theme::title(ui, icon::PAINT_BRUSH, &t!("paint.title"), Some(&t!("paint.hint")));
             self.tools_ui(ui);
             ui.add_space(4.0);
             theme::bezel(ui, |ui| self.canvas_ui(ui));
@@ -777,8 +751,8 @@ impl Painter {
             theme::title(
                 ui,
                 icon::FILM_STRIP,
-                &format!("Кадри · {} з {}", self.doc.cur + 1, self.doc.frames.len()),
-                Some("Щоб намалювати рух, зробіть копію кадру і змініть щось у ній."),
+                &t!("paint.frames_title", cur = self.doc.cur + 1, n = self.doc.frames.len()),
+                Some(&t!("paint.frames_hint")),
             );
             self.frames_ui(ui);
         });
@@ -788,8 +762,8 @@ impl Painter {
             theme::title(
                 ui,
                 icon::MAGIC_WAND,
-                "Анімація й показ",
-                Some("Ефект оживляє навіть один кадр. Так малюнок виглядатиме на клавіатурі:"),
+                &t!("paint.anim_title"),
+                Some(&t!("paint.anim_hint")),
             );
             self.animation_ui(ui, out);
         });

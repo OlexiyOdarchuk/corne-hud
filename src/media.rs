@@ -113,7 +113,7 @@ pub fn render(dir: &Path) -> Result<(), String> {
     };
     let mut gens: Vec<_> = shown
         .iter()
-        .map(|p| presets::make(p.id, presets::DEFAULT_TEXT).unwrap())
+        .map(|p| presets::make(p.id, &presets::default_text()).unwrap())
         .collect();
     let (gw, gh) = grid.size();
     let mut frames = Vec::new();
@@ -124,7 +124,7 @@ pub fn render(dir: &Path) -> Result<(), String> {
             g.frame(k as f32 / 20.0, &mut f);
             let o = grid.origin(i as u32);
             blit(&mut img, &f, o);
-            label(&mut img, p.label, o);
+            label(&mut img, &p.label(), o);
         }
         frames.push(img);
     }
@@ -144,7 +144,7 @@ pub fn render(dir: &Path) -> Result<(), String> {
         for (i, e) in effects.iter().enumerate() {
             let o = grid.origin(i as u32);
             blit(&mut img, &e.apply(&src, k), o);
-            label(&mut img, e.label(), o);
+            label(&mut img, &e.label(), o);
         }
         frames.push(img);
     }

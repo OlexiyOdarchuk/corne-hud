@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+# Apply the Corne udev rule (packaging/70-corne-hud.rules) without a replug.
+if [ "$1" = "configure" ] && command -v udevadm >/dev/null 2>&1; then
+    udevadm control --reload-rules || true
+    udevadm trigger --subsystem-match=hidraw --subsystem-match=input || true
+fi
+#DEBHELPER#
+exit 0

@@ -1,0 +1,10 @@
+post_install() {
+  udevadm control --reload-rules 2>/dev/null || true
+  udevadm trigger --subsystem-match=hidraw --subsystem-match=input 2>/dev/null || true
+  echo ':: Replug the Corne if the screens are not accessible yet.'
+  echo ':: Optional background service: systemctl --user enable --now corne-hud'
+}
+
+post_upgrade() {
+  post_install
+}

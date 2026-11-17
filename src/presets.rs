@@ -17,7 +17,6 @@ pub trait Gen: Send {
 
 pub struct Preset {
     pub id: &'static str,
-    pub label: &'static str,
     /// Чи використовує заготовка свій текст.
     pub uses_text: bool,
 }
@@ -25,102 +24,92 @@ pub struct Preset {
 pub const PRESETS: &[Preset] = &[
     Preset {
         id: "text",
-        label: "Свій текст",
         uses_text: true,
     },
     Preset {
         id: "system",
-        label: "Температури й батарея",
         uses_text: false,
     },
     Preset {
         id: "spectrum",
-        label: "Спектр звуку",
         uses_text: false,
     },
     Preset {
         id: "scope",
-        label: "Хвиля звуку",
         uses_text: false,
     },
     Preset {
         id: "bongo",
-        label: "Bongo-кіт",
         uses_text: false,
     },
     Preset {
         id: "clock",
-        label: "Аналоговий годинник",
         uses_text: false,
     },
     Preset {
         id: "matrix",
-        label: "Матриця",
         uses_text: false,
     },
     Preset {
         id: "fire",
-        label: "Вогонь",
         uses_text: false,
     },
     Preset {
         id: "plasma",
-        label: "Плазма",
         uses_text: false,
     },
     Preset {
         id: "life",
-        label: "Гра «Життя»",
         uses_text: false,
     },
     Preset {
         id: "snow",
-        label: "Сніг",
         uses_text: false,
     },
     Preset {
         id: "warp",
-        label: "Зоряний тунель",
         uses_text: false,
     },
     Preset {
         id: "tunnel",
-        label: "Тунель",
         uses_text: false,
     },
     Preset {
         id: "waves",
-        label: "Осцилограф",
         uses_text: false,
     },
     Preset {
         id: "flag",
-        label: "Прапор",
         uses_text: false,
     },
     Preset {
         id: "heart",
-        label: "Серце і кардіограма",
         uses_text: false,
     },
     Preset {
         id: "pong",
-        label: "Пінг-понг",
         uses_text: false,
     },
     Preset {
         id: "maze",
-        label: "Лабіринт",
         uses_text: false,
     },
     Preset {
         id: "bounce",
-        label: "Напис, що відбивається",
         uses_text: true,
     },
 ];
 
-pub const DEFAULT_TEXT: &str = "Привіт, Corne!";
+impl Preset {
+    pub fn label(&self) -> String {
+        let key = format!("preset.{}", self.id);
+        t!(&key).into_owned()
+    }
+}
+
+pub fn default_text() -> String {
+    t!("presets.default_text").into()
+}
 
 pub fn find(id: &str) -> Option<&'static Preset> {
     PRESETS.iter().find(|p| p.id == id)
@@ -128,7 +117,7 @@ pub fn find(id: &str) -> Option<&'static Preset> {
 
 pub fn make(id: &str, text: &str) -> Option<Box<dyn Gen>> {
     let text = if text.trim().is_empty() {
-        DEFAULT_TEXT.to_string()
+        default_text()
     } else {
         text.to_string()
     };
@@ -292,17 +281,8 @@ struct Font {
 fn font() -> Option<&'static Font> {
     static FONT: OnceLock<Option<Font>> = OnceLock::new();
     FONT.get_or_init(|| {
-        let mut candidates = Vec::new();
-        for q in ["DejaVu Sans:style=Bold", "sans-serif:bold"] {
-            if let Ok(out) = std::process::Command::new("fc-match")
-                .args(["-f", "%{file}", q])
-                .output()
-            {
-                candidates.push(String::from_utf8_lossy(&out.stdout).into_owned());
-            }
-        }
-        candidates.push("/usr/share/fonts/TTF/DejaVuSans-Bold.ttf".into());
-        candidates.push("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf".into());
+        let mut candidates = crate::platform::font_files("DejaVu Sans:style=Bold", true);
+        candidates.extend(crate::platform::font_files("sans-serif:bold", true));
         candidates.iter().find_map(|path| {
             let data = std::fs::read(path).ok()?;
             let font = fontdue::Font::from_bytes(data, fontdue::FontSettings::default()).ok()?;
@@ -419,13 +399,9 @@ impl Gen for Clock {
         if let Some(font) = font() {
             let time = now.format("%H:%M").to_string();
             font.draw(f, &time, 40.0, 17, 19.0);
-            const DAYS: [&str; 7] = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
-            let date = format!(
-                "{} {:02}.{:02}",
-                DAYS[now.weekday().num_days_from_monday() as usize],
-                now.day(),
-                now.month()
-            );
+            let key = format!("day.{}", now.weekday().num_days_from_monday());
+            let day = t!(&key);
+            let date = format!("{} {:02}.{:02}", day, now.day(), now.month());
             font.draw(f, &date, 41.0, 30, 11.0);
             // Секунди — смужка під часом.
             let w = (secs / 60.0 * 86.0) as i32;

@@ -1,0 +1,49 @@
+# Maintainer: OlexiyOdarchuk <OlexiyOdarchuk@users.noreply.github.com>
+pkgname=corne-hud
+pkgver=0.3.0
+pkgrel=1
+pkgdesc='Live OLED screens for the Corne split keyboard (GUI, CLI and user service)'
+arch=('x86_64' 'aarch64')
+url='https://github.com/OlexiyOdarchuk/corne-hud'
+license=('MIT')
+depends=('gcc-libs' 'glibc')
+makedepends=('cargo')
+optdepends=(
+  'playerctl: current track from MPRIS players'
+  'pipewire: audio spectrum via pw-record'
+  'libpulse: audio spectrum via parec'
+  'fontconfig: system fonts for text presets and drawing'
+)
+install=corne-hud.install
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')  # run updpkgsums before publishing
+
+_id=io.github.OlexiyOdarchuk.CorneHud
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 target/release/corne-hud "$pkgdir/usr/bin/corne-hud"
+  install -Dm644 packaging/corne-hud.desktop "$pkgdir/usr/share/applications/$_id.desktop"
+  install -Dm644 "packaging/$_id.metainfo.xml" "$pkgdir/usr/share/metainfo/$_id.metainfo.xml"
+  install -Dm644 packaging/icons/corne-hud.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/$_id.svg"
+  for s in 256 128 64 48 32; do
+    install -Dm644 "packaging/icons/corne-hud-$s.png" "$pkgdir/usr/share/icons/hicolor/${s}x${s}/apps/$_id.png"
+  done
+  install -Dm644 packaging/70-corne-hud.rules "$pkgdir/usr/lib/udev/rules.d/70-corne-hud.rules"
+  install -Dm644 packaging/pkg/corne-hud.service "$pkgdir/usr/lib/systemd/user/corne-hud.service"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

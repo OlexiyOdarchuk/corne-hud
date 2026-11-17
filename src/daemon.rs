@@ -3,7 +3,6 @@
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -51,11 +50,14 @@ struct Slot {
 impl Slot {
     fn describe(&self) -> String {
         match &self.content {
-            Content::None => "немає".into(),
-            Content::Anim { anim, .. } if anim.frames.len() == 1 => "картинка".into(),
-            Content::Anim { anim, .. } => format!("анімація, кадрів: {}", anim.frames.len()),
-            Content::Stream { .. } => "потік кадрів".into(),
-            Content::Live { id, .. } => format!("заготовка «{}»", presets::find(id).map_or(id.as_str(), |p| p.label)),
+            Content::None => t!("content.none").into(),
+            Content::Anim { anim, .. } if anim.frames.len() == 1 => t!("content.image").into(),
+            Content::Anim { anim, .. } => t!("content.anim", n = anim.frames.len()).into(),
+            Content::Stream { .. } => t!("content.stream").into(),
+            Content::Live { id, .. } => {
+                let name = presets::find(id).map_or(id.clone(), |p| p.label());
+                t!("content.preset", name = name).into()
+            }
         }
     }
 }
@@ -84,7 +86,7 @@ fn settings_file() -> PathBuf {
     config_dir().join("settings.json")
 }
 
-fn load_settings() -> Settings {
+pub fn load_settings() -> Settings {
     std::fs::read_to_string(settings_file())
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
@@ -102,12 +104,7 @@ fn layout_frame(name: &str) -> Frame {
     f
 }
 
-pub fn config_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"));
-    base.join("corne-hud")
-}
+pub use crate::platform::config_dir;
 
 fn slot_file(i: usize) -> PathBuf {
     config_dir().join(["main.bin", "side.bin"][i])
@@ -133,14 +130,12 @@ const MAX_FPS: [u32; 2] = [20, 10];
 const MASKS: [u8; 2] = [1, 2];
 
 pub fn run() -> Result<(), String> {
-    let path = ipc::socket_path();
-    if UnixStream::connect(&path).is_ok() {
+    if ipc::connect().is_ok() {
         // Не помилка: інша копія вже обслуговує клавіатуру (наприклад, її запустило вікно).
-        eprintln!("corne-hud: служба вже запущена");
+        eprintln!("corne-hud: {}", t!("log.already_running"));
         return Ok(());
     }
-    let _ = std::fs::remove_file(&path);
-    let listener = UnixListener::bind(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let listener = ipc::bind()?;
 
     let restore = |i: usize| {
         let saved: Option<SavedPreset> = std::fs::read_to_string(preset_file(i))
@@ -190,7 +185,7 @@ pub fn run() -> Result<(), String> {
         });
     }
 
-    eprintln!("corne-hud: служба запущена, сокет {}", path.display());
+    eprintln!("corne-hud: {}", t!("log.started", path = ipc::endpoint()));
     let music = sysinfo::watch_music();
     let mut layout_seen: Option<u64> = None;
     let mut cpu = sysinfo::Cpu::default();
@@ -215,7 +210,7 @@ pub fn run() -> Result<(), String> {
             });
             match opened {
                 Ok((d, h)) => {
-                    eprintln!("corne-hud: клавіатуру підключено");
+                    eprintln!("corne-hud: {}", t!("log.connected"));
                     let mut st = state.lock().unwrap();
                     paused = h.is_none();
                     st.status.paused = paused;
@@ -252,7 +247,7 @@ pub fn run() -> Result<(), String> {
                 paused = true;
                 next_check = now + Duration::from_secs(1);
                 state.lock().unwrap().status.paused = true;
-                eprintln!("corne-hud: клавіатуру відкрила інша програма, пауза");
+                eprintln!("corne-hud: {}", t!("log.paused"));
             }
             if paused && now >= next_check {
                 next_check = now + Duration::from_secs(1);
@@ -262,7 +257,7 @@ pub fn run() -> Result<(), String> {
                     next_hello = now;
                     text_sent = None;
                     state.lock().unwrap().status.paused = false;
-                    eprintln!("corne-hud: інша програма закрила клавіатуру, продовжуємо");
+                    eprintln!("corne-hud: {}", t!("log.resumed"));
                 }
             }
         }
@@ -281,7 +276,7 @@ pub fn run() -> Result<(), String> {
                 &mut layout_seen,
             );
             if let Err(e) = res {
-                eprintln!("corne-hud: зв'язок втрачено: {e}");
+                eprintln!("corne-hud: {}", t!("log.lost", err = e));
                 let mut st = state.lock().unwrap();
                 st.status.keyboard = false;
                 st.status.error = e.to_string();
@@ -499,7 +494,7 @@ fn end_flash(d: &mut Device, st: &mut State, now: Instant) -> std::io::Result<()
     Ok(())
 }
 
-fn serve(conn: UnixStream, state: Arc<Mutex<State>>) {
+fn serve(conn: ipc::Stream, state: Arc<Mutex<State>>) {
     let Ok(mut writer) = conn.try_clone() else {
         return;
     };
@@ -508,7 +503,7 @@ fn serve(conn: UnixStream, state: Arc<Mutex<State>>) {
         let resp = match serde_json::from_str::<Request>(&line) {
             Ok(req) => handle(req, &state),
             Err(e) => Response::Error {
-                message: format!("незрозумілий запит: {e}"),
+                message: t!("err.bad_request", err = e).into(),
             },
         };
         let mut out = serde_json::to_string(&resp).unwrap_or_default();
@@ -539,8 +534,9 @@ fn handle(req: Request, state: &Mutex<State>) -> Response {
         Request::Settings { settings } => {
             let _ = std::fs::create_dir_all(config_dir());
             if let Err(e) = std::fs::write(settings_file(), serde_json::to_string(&settings).unwrap_or_default()) {
-                eprintln!("corne-hud: не вдалося зберегти налаштування: {e}");
+                eprintln!("corne-hud: {}", t!("log.settings_save", err = e));
             }
+            crate::i18n::apply(&settings.lang);
             st.status.settings = settings;
         }
         Request::Status => {
@@ -569,7 +565,7 @@ fn handle(req: Request, state: &Mutex<State>) -> Response {
                 Ok(f) if !f.is_empty() => f,
                 Ok(_) => {
                     return Response::Error {
-                        message: "немає кадрів".into(),
+                        message: t!("err.no_frames").into(),
                     }
                 }
                 Err(e) => return Response::Error { message: e },
@@ -585,7 +581,7 @@ fn handle(req: Request, state: &Mutex<State>) -> Response {
                 if persist {
                     let _ = std::fs::create_dir_all(config_dir());
                     if let Err(e) = oled::save_anim(&slot_file(i), &anim) {
-                        eprintln!("corne-hud: не вдалося зберегти: {e}");
+                        eprintln!("corne-hud: {}", t!("log.save", err = e));
                     }
                 }
                 st.slots[i].content = Content::Anim {
@@ -624,7 +620,7 @@ fn handle(req: Request, state: &Mutex<State>) -> Response {
         Request::Preset { target, id, text } => {
             if presets::find(&id).is_none() {
                 return Response::Error {
-                    message: format!("немає заготовки «{id}»"),
+                    message: t!("err.no_preset", id = id).into(),
                 };
             }
             let _ = std::fs::create_dir_all(config_dir());

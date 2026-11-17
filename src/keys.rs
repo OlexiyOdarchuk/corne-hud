@@ -1,8 +1,11 @@
 //! Натискання клавіш для анімацій: лише факт і час натискання, без кодів клавіш.
 //!
-//! Читає `/dev/input/*-event-kbd` (потрібна група `input` або правило udev з packaging/).
+//! Linux: читає `/dev/input/*-event-kbd` (потрібна група `input` або правило udev з packaging/).
+//! Windows: низькорівневий хук клавіатури, без прав адміністратора.
 
+#[cfg(not(windows))]
 use std::fs::File;
+#[cfg(not(windows))]
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
@@ -24,13 +27,17 @@ struct Watcher {
     access: AtomicU8,
     /// Час останніх натискань — для швидкості друку.
     recent: Mutex<Vec<Instant>>,
+    #[cfg_attr(windows, allow(dead_code))]
     open: Mutex<Vec<PathBuf>>,
 }
 
 fn watcher() -> &'static Watcher {
     static W: OnceLock<Watcher> = OnceLock::new();
     W.get_or_init(|| {
+        #[cfg(not(windows))]
         std::thread::spawn(scan_loop);
+        #[cfg(windows)]
+        std::thread::spawn(hook_loop);
         Watcher {
             presses: AtomicU64::new(0),
             access: AtomicU8::new(0),
@@ -62,6 +69,63 @@ pub fn per_minute() -> u32 {
     r.len() as u32 * 6
 }
 
+fn record_press(w: &Watcher) {
+    w.presses.fetch_add(1, Ordering::Relaxed);
+    let mut r = w.recent.lock().unwrap();
+    r.push(Instant::now());
+    if r.len() > 512 {
+        let edge = Instant::now() - Duration::from_secs(10);
+        r.retain(|t| *t >= edge);
+    }
+}
+
+#[cfg(windows)]
+fn hook_loop() {
+    use std::sync::atomic::AtomicBool;
+
+    use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW, TranslateMessage, KBDLLHOOKSTRUCT, MSG,
+        WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    };
+
+    /// Затиснуті клавіші: автоповтор не рахується як нове натискання.
+    static DOWN: [AtomicBool; 256] = [const { AtomicBool::new(false) }; 256];
+
+    unsafe extern "system" fn proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        if code >= 0 {
+            let vk = unsafe { (*(lparam as *const KBDLLHOOKSTRUCT)).vkCode } as usize & 0xFF;
+            match wparam as u32 {
+                WM_KEYDOWN | WM_SYSKEYDOWN => {
+                    if !DOWN[vk].swap(true, Ordering::Relaxed) {
+                        record_press(watcher());
+                    }
+                }
+                WM_KEYUP | WM_SYSKEYUP => DOWN[vk].store(false, Ordering::Relaxed),
+                _ => {}
+            }
+        }
+        unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
+    }
+
+    let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(proc), GetModuleHandleW(std::ptr::null()), 0) };
+    if hook.is_null() {
+        watcher().access.store(2, Ordering::Relaxed);
+        return;
+    }
+    watcher().access.store(1, Ordering::Relaxed);
+    // Хук працює, поки цей потік обробляє повідомлення.
+    let mut msg: MSG = unsafe { std::mem::zeroed() };
+    while unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) } > 0 {
+        unsafe {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+}
+
+#[cfg(not(windows))]
 fn keyboards() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     for dir in ["/dev/input/by-id", "/dev/input/by-path"] {
@@ -80,6 +144,7 @@ fn keyboards() -> Vec<PathBuf> {
     out
 }
 
+#[cfg(not(windows))]
 fn scan_loop() {
     loop {
         let w = watcher();
@@ -111,6 +176,7 @@ fn scan_loop() {
     }
 }
 
+#[cfg(not(windows))]
 fn read_events(mut file: File, path: PathBuf) {
     // struct input_event на 64-бітних системах: timeval (16) + type (2) + code (2) + value (4).
     const SIZE: usize = 24;
@@ -124,13 +190,7 @@ fn read_events(mut file: File, path: PathBuf) {
             let kind = u16::from_ne_bytes([ev[16], ev[17]]);
             let value = i32::from_ne_bytes([ev[20], ev[21], ev[22], ev[23]]);
             if kind == 1 && value == 1 {
-                w.presses.fetch_add(1, Ordering::Relaxed);
-                let mut r = w.recent.lock().unwrap();
-                r.push(Instant::now());
-                if r.len() > 512 {
-                    let edge = Instant::now() - Duration::from_secs(10);
-                    r.retain(|t| *t >= edge);
-                }
+                record_press(w);
             }
         }
     }

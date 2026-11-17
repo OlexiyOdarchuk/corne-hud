@@ -1,0 +1,219 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, os: ubuntu-22.04 }
+          - { arch: aarch64, os: ubuntu-22.04-arm }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.arch }}
+      - name: Version
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          if [[ "$GITHUB_REF" == refs/tags/v* && "${GITHUB_REF_NAME#v}" != "$VERSION" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $VERSION"; exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+      - name: Build
+        run: cargo build --release --locked
+      - name: Linked libraries
+        run: ldd target/release/corne-hud
+      - name: Packaging tools
+        run: cargo install --locked cargo-deb cargo-generate-rpm
+      - name: Tarball
+        run: |
+          NAME=corne-hud-$VERSION-linux-${{ matrix.arch }}
+          mkdir -p dist "$NAME/packaging/icons"
+          cp target/release/corne-hud README.md LICENSE "$NAME/"
+          cp packaging/corne-hud.desktop packaging/corne-hud.service packaging/70-corne-hud.rules \
+             packaging/io.github.OlexiyOdarchuk.CorneHud.metainfo.xml "$NAME/packaging/"
+          cp packaging/icons/*.svg packaging/icons/*.png "$NAME/packaging/icons/"
+          tar czf "dist/$NAME.tar.gz" "$NAME"
+      - name: deb
+        run: cargo deb --no-build --locked -o dist/
+      - name: rpm
+        run: cargo generate-rpm -o dist/
+      - name: AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+          ARCH: ${{ matrix.arch }}
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/appimagetool" \
+            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-$ARCH.AppImage"
+          chmod +x "$RUNNER_TEMP/appimagetool"
+          APPIMAGETOOL="$RUNNER_TEMP/appimagetool" packaging/appimage/build.sh target/release/corne-hud dist
+      - run: ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-linux-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  flatpak-sources:
+    name: Flatpak cargo sources
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: flatpak-cargo-generator
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/flatpak-cargo-generator.py" \
+            https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py
+          pipx run "$RUNNER_TEMP/flatpak-cargo-generator.py" Cargo.lock -o cargo-sources.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cargo-sources
+          path: cargo-sources.json
+          if-no-files-found: error
+
+  flatpak:
+    name: Flatpak x86_64
+    needs: flatpak-sources
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-sources
+          path: packaging/flatpak
+      - name: Version
+        run: echo "VERSION=$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -n1)" >> "$GITHUB_ENV"
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          manifest-path: packaging/flatpak/io.github.OlexiyOdarchuk.CorneHud.yml
+          bundle: corne-hud-${{ env.VERSION }}-x86_64.flatpak
+          cache-key: flatpak-builder-${{ github.sha }}
+          upload-artifact: false
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-flatpak-x86_64
+          path: corne-hud-${{ env.VERSION }}-x86_64.flatpak
+          if-no-files-found: error
+
+  windows:
+    name: Windows x86_64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+      - name: Package
+        shell: pwsh
+        run: |
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          $name = "corne-hud-$version-windows-x86_64"
+          New-Item -ItemType Directory -Force -Path dist, $name | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/corne-hud.exe, README.md, LICENSE -Destination $name
+          Compress-Archive -Path $name -DestinationPath "dist/$name.zip"
+          Copy-Item target/x86_64-pc-windows-msvc/release/corne-hud.exe "dist/$name.exe"
+          Get-ChildItem dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-windows-x86_64
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    name: macOS universal
+    runs-on: macos-14
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+      - name: Universal binary
+        run: |
+          mkdir -p dist build
+          lipo -create -output build/corne-hud \
+            target/aarch64-apple-darwin/release/corne-hud \
+            target/x86_64-apple-darwin/release/corne-hud
+          lipo -info build/corne-hud
+          echo "VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')" >> "$GITHUB_ENV"
+      - name: App bundle
+        run: |
+          APP="build/Corne HUD.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp build/corne-hud "$APP/Contents/MacOS/corne-hud"
+          cp packaging/icons/corne-hud.icns "$APP/Contents/Resources/corne-hud.icns"
+          sed "s/@VERSION@/$VERSION/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
+          plutil -lint "$APP/Contents/Info.plist"
+          # Ad-hoc signature (no Developer ID): Apple Silicon refuses to run unsigned code.
+          codesign --force --deep --sign - "$APP"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/corne-hud-$VERSION-macos-universal.zip"
+      - name: DMG
+        run: |
+          mkdir -p build/dmg
+          cp -R "build/Corne HUD.app" build/dmg/
+          ln -s /Applications build/dmg/Applications
+          hdiutil create -volname "Corne HUD" -srcfolder build/dmg -ov -format UDZO \
+            "dist/corne-hud-$VERSION-macos-universal.dmg"
+      - name: CLI tarball
+        run: |
+          NAME=corne-hud-$VERSION-macos-universal-cli
+          mkdir -p "build/$NAME"
+          cp build/corne-hud README.md LICENSE "build/$NAME/"
+          tar -C build -czf "dist/$NAME.tar.gz" "$NAME"
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-macos-universal
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    needs: [linux, flatpak, windows, macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+          pattern: pkg-*
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+      # Appends to an existing release too: manually attached firmware .uf2 files are kept.
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          draft: false
+          generate_release_notes: true

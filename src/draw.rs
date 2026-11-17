@@ -187,25 +187,26 @@ impl Effect {
         Effect::Glitch,
     ];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            Effect::None => "Без ефекту",
-            Effect::ScrollLeft => "Біжить ліворуч",
-            Effect::ScrollRight => "Біжить праворуч",
-            Effect::ScrollUp => "Пливе вгору",
-            Effect::ScrollDown => "Пливе вниз",
-            Effect::Swing => "Гойдається",
-            Effect::Bounce => "Підстрибує",
-            Effect::Shake => "Тремтить",
-            Effect::Wave => "Хвиля",
-            Effect::Pulse => "Пульсує",
-            Effect::Blink => "Блимає",
-            Effect::Invert => "Мигає інверсією",
-            Effect::Reveal => "З'являється і зникає",
-            Effect::Dissolve => "Розсипається на точки",
-            Effect::Sparkle => "Іскри навколо",
-            Effect::Glitch => "Глюк",
+            Effect::None => t!("effect.none"),
+            Effect::ScrollLeft => t!("effect.scroll_left"),
+            Effect::ScrollRight => t!("effect.scroll_right"),
+            Effect::ScrollUp => t!("effect.scroll_up"),
+            Effect::ScrollDown => t!("effect.scroll_down"),
+            Effect::Swing => t!("effect.swing"),
+            Effect::Bounce => t!("effect.bounce"),
+            Effect::Shake => t!("effect.shake"),
+            Effect::Wave => t!("effect.wave"),
+            Effect::Pulse => t!("effect.pulse"),
+            Effect::Blink => t!("effect.blink"),
+            Effect::Invert => t!("effect.invert"),
+            Effect::Reveal => t!("effect.reveal"),
+            Effect::Dissolve => t!("effect.dissolve"),
+            Effect::Sparkle => t!("effect.sparkle"),
+            Effect::Glitch => t!("effect.glitch"),
         }
+        .into()
     }
 
     /// Скільки кроків триває один цикл ефекту.

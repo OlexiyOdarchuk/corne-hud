@@ -1,6 +1,6 @@
 [package]
 name = "corne-hud"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.88"
 description = "OLED screens of the Corne split keyboard: modes, pictures, GIFs, drawing, live animations, clock/CPU/music"
@@ -15,14 +15,94 @@ base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4.5", features = ["derive"] }
 eframe = "0.31"
-libc = "0.2"
 fontdue = "0.9"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 egui-phosphor = "0.9"
+rust-i18n = "4.2.4"
+sys-locale = "0.3.2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Linux talks to /dev/hidraw directly; elsewhere the keyboard is reached through hidapi.
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+hidapi = { version = "2.6", default-features = false, features = ["windows-native", "macos-shared-device"] }
+psinfo = { package = "sysinfo", version = "0.37", default-features = false, features = ["system"] }
+
+[target.'cfg(windows)'.dependencies]
+cpal = "0.18.2"
+windows = { version = "0.62.2", features = ["Media_Control", "Foundation", "Win32_System_WinRT"] }
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_System_Console",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Power",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [profile.release]
 lto = "thin"
 strip = true
+
+# --- Release packaging (cargo-deb, cargo-generate-rpm). See packaging/ and .github/workflows/release.yml.
+
+[package.metadata.deb]
+maintainer = "OlexiyOdarchuk <OlexiyOdarchuk@users.noreply.github.com>"
+copyright = "2026 iShawyha"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+Corne HUD drives the OLED screens of a Corne split keyboard over USB Raw HID: \
+screen modes, clock, temperatures, music spectrum, Bongo cat, animations, \
+pictures, GIFs and live drawing. Includes a GUI, a CLI and a background user service."""
+section = "utils"
+priority = "optional"
+depends = "$auto"
+recommends = "playerctl, pipewire-bin | pulseaudio-utils, fontconfig"
+maintainer-scripts = "packaging/deb/"
+assets = [
+    ["target/release/corne-hud", "usr/bin/", "755"],
+    ["packaging/corne-hud.desktop", "usr/share/applications/io.github.OlexiyOdarchuk.CorneHud.desktop", "644"],
+    ["packaging/io.github.OlexiyOdarchuk.CorneHud.metainfo.xml", "usr/share/metainfo/", "644"],
+    ["packaging/icons/corne-hud.svg", "usr/share/icons/hicolor/scalable/apps/io.github.OlexiyOdarchuk.CorneHud.svg", "644"],
+    ["packaging/icons/corne-hud-256.png", "usr/share/icons/hicolor/256x256/apps/io.github.OlexiyOdarchuk.CorneHud.png", "644"],
+    ["packaging/icons/corne-hud-128.png", "usr/share/icons/hicolor/128x128/apps/io.github.OlexiyOdarchuk.CorneHud.png", "644"],
+    ["packaging/icons/corne-hud-64.png", "usr/share/icons/hicolor/64x64/apps/io.github.OlexiyOdarchuk.CorneHud.png", "644"],
+    ["packaging/icons/corne-hud-48.png", "usr/share/icons/hicolor/48x48/apps/io.github.OlexiyOdarchuk.CorneHud.png", "644"],
+    ["packaging/icons/corne-hud-32.png", "usr/share/icons/hicolor/32x32/apps/io.github.OlexiyOdarchuk.CorneHud.png", "644"],
+    ["packaging/70-corne-hud.rules", "usr/lib/udev/rules.d/", "644"],
+    ["packaging/pkg/corne-hud.service", "usr/lib/systemd/user/corne-hud.service", "644"],
+    ["README.md", "usr/share/doc/corne-hud/", "644"],
+]
+
+[package.metadata.generate-rpm]
+summary = "Live OLED screens for the Corne split keyboard"
+post_install_script = "packaging/rpm/postinstall.sh"
+assets = [
+    { source = "target/release/corne-hud", dest = "/usr/bin/corne-hud", mode = "755" },
+    { source = "packaging/corne-hud.desktop", dest = "/usr/share/applications/io.github.OlexiyOdarchuk.CorneHud.desktop", mode = "644" },
+    { source = "packaging/io.github.OlexiyOdarchuk.CorneHud.metainfo.xml", dest = "/usr/share/metainfo/io.github.OlexiyOdarchuk.CorneHud.metainfo.xml", mode = "644" },
+    { source = "packaging/icons/corne-hud.svg", dest = "/usr/share/icons/hicolor/scalable/apps/io.github.OlexiyOdarchuk.CorneHud.svg", mode = "644" },
+    { source = "packaging/icons/corne-hud-256.png", dest = "/usr/share/icons/hicolor/256x256/apps/io.github.OlexiyOdarchuk.CorneHud.png", mode = "644" },
+    { source = "packaging/icons/corne-hud-128.png", dest = "/usr/share/icons/hicolor/128x128/apps/io.github.OlexiyOdarchuk.CorneHud.png", mode = "644" },
+    { source = "packaging/icons/corne-hud-64.png", dest = "/usr/share/icons/hicolor/64x64/apps/io.github.OlexiyOdarchuk.CorneHud.png", mode = "644" },
+    { source = "packaging/icons/corne-hud-48.png", dest = "/usr/share/icons/hicolor/48x48/apps/io.github.OlexiyOdarchuk.CorneHud.png", mode = "644" },
+    { source = "packaging/icons/corne-hud-32.png", dest = "/usr/share/icons/hicolor/32x32/apps/io.github.OlexiyOdarchuk.CorneHud.png", mode = "644" },
+    { source = "packaging/70-corne-hud.rules", dest = "/usr/lib/udev/rules.d/70-corne-hud.rules", mode = "644" },
+    { source = "packaging/pkg/corne-hud.service", dest = "/usr/lib/systemd/user/corne-hud.service", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/corne-hud/README.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/licenses/corne-hud/LICENSE", mode = "644", doc = true },
+]
+
+[package.metadata.generate-rpm.recommends]
+playerctl = "*"
+pipewire-utils = "*"
+fontconfig = "*"
+
+# Windows exe icon (build.rs runs it only for target_os = "windows").
+[build-dependencies]
+winresource = { version = "0.1.34", default-features = false }

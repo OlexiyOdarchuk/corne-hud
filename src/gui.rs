@@ -22,7 +22,12 @@ enum Tab {
 pub fn run(draw: bool) -> Result<(), String> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Corne — екрани")
+            .with_title(t!("app.title"))
+            .with_app_id("io.github.OlexiyOdarchuk.CorneHud")
+            .with_icon(
+                eframe::icon_data::from_png_bytes(include_bytes!("../packaging/icons/corne-hud-256.png"))
+                    .unwrap_or_default(),
+            )
             .with_inner_size([840.0, 900.0])
             .with_min_inner_size([620.0, 560.0])
             .with_drag_and_drop(true),
@@ -80,7 +85,7 @@ fn make_views(text: &str) -> Vec<PresetView> {
     PRESETS
         .iter()
         .map(|p| PresetView {
-            gen: presets::make(p.id, text).expect("відома заготовка"),
+            gen: presets::make(p.id, text).expect("known preset"),
             tex: None,
         })
         .collect()
@@ -92,6 +97,7 @@ impl App {
             Ok(c) => (Some(c), String::new()),
             Err(e) => (None, e),
         };
+        let text = presets::default_text();
         Self {
             client,
             status: None,
@@ -105,8 +111,8 @@ impl App {
             shown: None,
             frame_idx: 0,
             frame_at: Instant::now(),
-            preset_text: presets::DEFAULT_TEXT.to_string(),
-            preset_views: make_views(presets::DEFAULT_TEXT),
+            preset_views: make_views(&text),
+            preset_text: text,
             presets_start: Instant::now(),
             presets_drawn: None,
             tab: if draw { Tab::Draw } else { Tab::Screens },
@@ -173,7 +179,7 @@ impl App {
                 self.message.clear();
                 self.reconvert();
             }
-            Err(e) => self.message = format!("Не вдалося відкрити файл: {e}"),
+            Err(e) => self.message = t!("msg.open_failed", err = e).into(),
         }
     }
 
@@ -198,7 +204,7 @@ impl App {
             }
             Action::Pick => {
                 let file = rfd::FileDialog::new()
-                    .add_filter("Зображення", &["png", "jpg", "jpeg", "gif", "bmp", "webp"])
+                    .add_filter(t!("picture.images"), &["png", "jpg", "jpeg", "gif", "bmp", "webp"])
                     .pick_file();
                 if let Some(p) = file {
                     self.load(p);
@@ -207,7 +213,7 @@ impl App {
             Action::Send(t) => {
                 if let Some(anim) = self.anim.clone() {
                     if self.call(&ipc::show_request(t, &anim, true)).is_some() {
-                        self.message = "Надіслано".into();
+                        self.message = t!("msg.sent").into();
                     }
                 }
             }
@@ -225,15 +231,20 @@ impl App {
                     })
                     .is_some()
                 {
-                    self.message = format!("Увімкнено: {}", presets::find(id).map_or(id, |p| p.label));
+                    let name = presets::find(id).map_or(id.to_string(), |p| p.label());
+                    self.message = t!("msg.enabled", name = name).into();
                 }
             }
             Action::Clear(t) => {
                 if self.call(&Request::Clear { target: t }).is_some() {
-                    self.message = "Картинки прибрано".into();
+                    self.message = t!("msg.cleared").into();
                 }
             }
             Action::Settings(settings) => {
+                if self.status.as_ref().is_none_or(|s| s.settings.lang != settings.lang) {
+                    crate::i18n::apply(&settings.lang);
+                    self.retranslate();
+                }
                 self.call(&Request::Settings { settings });
             }
         }
@@ -275,36 +286,78 @@ fn screen_icon(s: Screen) -> &'static str {
     }
 }
 
-const TARGETS: [(Target, &str); 3] = [
-    (Target::Main, "Половина з USB"),
-    (Target::Side, "Друга половина"),
-    (Target::Both, "Обидві"),
-];
+fn targets() -> [(Target, String); 3] {
+    [
+        (Target::Main, t!("target.main").into()),
+        (Target::Side, t!("target.side").into()),
+        (Target::Both, t!("target.both").into()),
+    ]
+}
 
 impl App {
-    fn header(&mut self, ui: &mut egui::Ui) {
+    /// After a language switch: the default preset text follows the language if untouched.
+    fn retranslate(&mut self) {
+        let was_default = crate::i18n::LANGS
+            .iter()
+            .any(|(code, _)| self.preset_text == t!("presets.default_text", locale = code));
+        if was_default {
+            self.preset_text = presets::default_text();
+            self.preset_views = make_views(&self.preset_text);
+        }
+    }
+
+    fn lang_menu(&mut self, ui: &mut egui::Ui) -> Option<Settings> {
+        let status = self.status.as_ref()?;
+        let current = status.settings.lang.clone();
+        let name = |code: &str| {
+            crate::i18n::LANGS
+                .iter()
+                .find(|(c, _)| *c == code)
+                .map_or_else(|| t!("lang.system").to_string(), |(_, n)| n.to_string())
+        };
+        let mut chosen = current.clone();
+        egui::ComboBox::from_id_salt("lang")
+            .selected_text(theme::with_icon(icon::GLOBE, &name(&current)))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut chosen, String::new(), t!("lang.system"));
+                for (code, n) in crate::i18n::LANGS {
+                    ui.selectable_value(&mut chosen, code.to_string(), *n);
+                }
+            })
+            .response
+            .on_hover_text(t!("lang.label"));
+        (chosen != current).then(|| Settings {
+            lang: chosen,
+            ..status.settings.clone()
+        })
+    }
+
+    fn header(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         ui.horizontal(|ui| {
             ui.label(RichText::new(icon::KEYBOARD).size(24.0).color(theme::ACCENT));
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 ui.label(RichText::new("Corne").font(theme::bold(19.0)).color(theme::TEXT));
-                ui.label(RichText::new("екрани клавіатури").size(12.5).color(theme::WEAK));
+                ui.label(RichText::new(t!("app.subtitle")).size(12.5).color(theme::WEAK));
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let (color, text, hint) = match &self.status {
                     Some(s) if s.keyboard && s.paused => (
                         theme::WARN,
-                        "Пауза: відкритий Vial".to_string(),
-                        "Поки Vial чи vial.rocks тримає клавіатуру, екрани не оновлюються".to_string(),
+                        t!("status.paused").to_string(),
+                        t!("status.paused_hint").to_string(),
                     ),
-                    Some(s) if s.keyboard => (theme::GOOD, "Клавіатура підключена".into(), String::new()),
-                    Some(s) => (theme::WARN, "Клавіатуру не знайдено".into(), s.error.clone()),
+                    Some(s) if s.keyboard => (theme::GOOD, t!("status.connected").into(), String::new()),
+                    Some(s) => (theme::WARN, t!("status.not_found").into(), s.error.clone()),
                     None => (
                         theme::BAD,
-                        "Служба не відповідає".into(),
-                        "Фонова служба corne-hud не запущена".into(),
+                        t!("status.no_daemon").into(),
+                        t!("status.no_daemon_hint").into(),
                     ),
                 };
+                if let Some(set) = self.lang_menu(ui) {
+                    actions.push(Action::Settings(set));
+                }
                 let r = theme::status_pill(ui, color, &text);
                 if !hint.is_empty() {
                     r.on_hover_text(hint);
@@ -314,11 +367,11 @@ impl App {
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             for (tab, glyph, label) in [
-                (Tab::Screens, icon::MONITOR, "Екрани й заготовки"),
-                (Tab::Draw, icon::PAINT_BRUSH, "Малювання"),
-                (Tab::Picture, icon::IMAGE, "Картинка або GIF"),
+                (Tab::Screens, icon::MONITOR, t!("tab.screens")),
+                (Tab::Draw, icon::PAINT_BRUSH, t!("tab.draw")),
+                (Tab::Picture, icon::IMAGE, t!("tab.picture")),
             ] {
-                if theme::toggle(ui, self.tab == tab, theme::with_icon(glyph, label)).clicked() {
+                if theme::toggle(ui, self.tab == tab, theme::with_icon(glyph, &label)).clicked() {
                     self.tab = tab;
                 }
             }
@@ -328,28 +381,33 @@ impl App {
     fn screens_tab(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let status = self.status.clone().unwrap_or_default();
         theme::card(ui, |ui| {
-            theme::title(
-                ui,
-                icon::MONITOR,
-                "Режими екранів",
-                Some("Що показує кожна половина. На клавіатурі те саме перемикає шар Adjust: Y, U, I."),
-            );
+            theme::title(ui, icon::MONITOR, &t!("screens.title"), Some(&t!("screens.hint")));
             ui.columns(2, |cols| {
                 let sides = [
-                    (Target::Main, "Половина з USB", status.main_screen, &status.main_content),
-                    (Target::Side, "Друга половина", status.side_screen, &status.side_content),
+                    (
+                        Target::Main,
+                        t!("target.main"),
+                        status.main_screen,
+                        &status.main_content,
+                    ),
+                    (
+                        Target::Side,
+                        t!("target.side"),
+                        status.side_screen,
+                        &status.side_content,
+                    ),
                 ];
                 for (ui, (target, title, current, content)) in cols.iter_mut().zip(sides) {
-                    theme::caption(ui, title);
+                    theme::caption(ui, &title);
                     ui.spacing_mut().item_spacing.y = 4.0;
                     for s in Screen::ALL {
-                        if theme::row(ui, current == Some(s), screen_icon(s), s.label()).clicked() {
+                        if theme::row(ui, current == Some(s), screen_icon(s), &s.label()).clicked() {
                             actions.push(Action::SetScreen(target, s));
                         }
                     }
                     ui.add_space(2.0);
                     ui.label(
-                        RichText::new(format!("Картинка: {content}"))
+                        RichText::new(t!("screens.content", content = content))
                             .size(12.5)
                             .color(theme::WEAK),
                     );
@@ -357,55 +415,44 @@ impl App {
             });
             ui.add_space(6.0);
             let off = status.screens_off;
-            let label = if off {
-                "Екрани вимкнені — увімкнути"
-            } else {
-                "Вимкнути обидва екрани"
-            };
-            if theme::toggle(ui, off, theme::with_icon(icon::POWER, label)).clicked() {
+            let label = if off { t!("screens.off_on") } else { t!("screens.off") };
+            if theme::toggle(ui, off, theme::with_icon(icon::POWER, &label)).clicked() {
                 actions.push(Action::SetOff(!off));
             }
         });
 
         ui.add_space(12.0);
         theme::card(ui, |ui| {
-            theme::title(
-                ui,
-                icon::TRANSLATE,
-                "Розкладка на екрані",
-                Some("Після перемикання мови на екрані на мить з'являється EN, UA тощо."),
-            );
+            theme::title(ui, icon::TRANSLATE, &t!("layout.title"), Some(&t!("layout.hint")));
             let mut set = status.settings.clone();
             ui.horizontal_wrapped(|ui| {
                 let label = if set.layout_flash {
-                    "Показувати"
+                    t!("layout.show")
                 } else {
-                    "Не показувати"
+                    t!("layout.hide")
                 };
-                if theme::toggle(ui, set.layout_flash, theme::with_icon(icon::KEYBOARD, label)).clicked() {
+                if theme::toggle(ui, set.layout_flash, theme::with_icon(icon::KEYBOARD, &label)).clicked() {
                     set.layout_flash = !set.layout_flash;
                 }
                 ui.add_space(8.0);
-                ui.label(RichText::new("на").color(theme::WEAK));
-                for (t, label) in TARGETS {
+                ui.label(RichText::new(t!("target.on")).color(theme::WEAK));
+                for (t, label) in targets() {
                     ui.add_enabled_ui(set.layout_flash, |ui| ui.radio_value(&mut set.layout_target, t, label));
                 }
             });
-            let now = if status.layout.is_empty() {
-                "Поточна розкладка невідома: показ працює в KDE Plasma.".to_string()
+            let now = if cfg!(target_os = "macos") {
+                t!("layout.unsupported").to_string()
+            } else if status.layout.is_empty() {
+                t!("layout.unknown").to_string()
             } else {
-                format!("Зараз: {}", status.layout)
+                t!("layout.now", layout = status.layout).to_string()
             };
             ui.label(RichText::new(now).size(12.5).color(theme::WEAK));
             if status.keyboard && status.fw_proto == 1 {
                 ui.label(
-                    RichText::new(theme::with_icon(
-                        icon::WARNING_CIRCLE,
-                        "Зі старою прошивкою розкладка видна лише на екрані з картинкою чи заготовкою. \
-                         Нова прошивка показує її поверх будь-якого режиму.",
-                    ))
-                    .size(12.5)
-                    .color(theme::WARN),
+                    RichText::new(theme::with_icon(icon::WARNING_CIRCLE, &t!("layout.old_fw")))
+                        .size(12.5)
+                        .color(theme::WARN),
                 );
             }
             if set != status.settings {
@@ -415,17 +462,12 @@ impl App {
 
         ui.add_space(12.0);
         theme::card(ui, |ui| {
-            theme::title(
-                ui,
-                icon::SPARKLE,
-                "Заготовки",
-                Some("Живі анімації. Їх малює комп'ютер, тож на екрані вони йдуть, поки працює служба corne-hud."),
-            );
+            theme::title(ui, icon::SPARKLE, &t!("presets.title"), Some(&t!("presets.hint")));
             ui.horizontal(|ui| {
-                ui.label("Текст:");
+                ui.label(t!("presets.text_label"));
                 ui.add(
                     egui::TextEdit::singleline(&mut self.preset_text)
-                        .hint_text("для «Свій текст» і «Напис, що відбивається»")
+                        .hint_text(t!("presets.text_hint"))
                         .desired_width(320.0),
                 );
             });
@@ -451,13 +493,13 @@ impl App {
                                     if let Some(tex) = &v.tex {
                                         ui.image((tex.id(), img));
                                     }
-                                    ui.label(RichText::new(p.label).color(theme::TEXT));
+                                    ui.label(RichText::new(p.label()).color(theme::TEXT));
                                     ui.horizontal(|ui| {
                                         ui.spacing_mut().item_spacing.x = 4.0;
                                         for (t, label, hint) in [
-                                            (Target::Main, "USB", "На екран половини з USB"),
-                                            (Target::Side, "Друга", "На екран другої половини"),
-                                            (Target::Both, "Обидва", "На обидва екрани"),
+                                            (Target::Main, t!("target.main_short"), t!("target.main_hint")),
+                                            (Target::Side, t!("target.side_short"), t!("target.side_hint")),
+                                            (Target::Both, t!("target.both_short"), t!("target.both_hint")),
                                         ] {
                                             if ui.small_button(label).on_hover_text(hint).clicked() {
                                                 actions.push(Action::Preset(t, p.id));
@@ -476,12 +518,7 @@ impl App {
 
     fn picture_tab(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>, opts: &mut ConvertOpts) {
         theme::card(ui, |ui| {
-            theme::title(
-                ui,
-                icon::IMAGE,
-                "Своя картинка або GIF",
-                Some("PNG, JPG, GIF, BMP, WebP. Файл можна просто перетягнути у вікно."),
-            );
+            theme::title(ui, icon::IMAGE, &t!("picture.title"), Some(&t!("picture.hint")));
             let size = Vec2::new(oled::W as f32 * 4.0, oled::H as f32 * 4.0);
             let clicked = theme::bezel(ui, |ui| match &self.preview {
                 Some(tex) if self.anim.is_some() => ui.image((tex.id(), size)).interact(egui::Sense::click()).clicked(),
@@ -498,7 +535,7 @@ impl App {
                     ui.painter().text(
                         rect.center() + Vec2::new(0.0, 18.0),
                         egui::Align2::CENTER_CENTER,
-                        "Перетягніть файл сюди або натисніть, щоб вибрати",
+                        t!("picture.drop"),
                         egui::FontId::proportional(14.0),
                         c,
                     );
@@ -513,7 +550,7 @@ impl App {
             }
             ui.horizontal(|ui| {
                 if ui
-                    .button(theme::with_icon(icon::FOLDER_OPEN, "Вибрати файл…"))
+                    .button(theme::with_icon(icon::FOLDER_OPEN, &t!("picture.pick")))
                     .clicked()
                 {
                     actions.push(Action::Pick);
@@ -525,7 +562,7 @@ impl App {
                         .unwrap_or_default();
                     let frames = self.anim.as_ref().map_or(0, |a| a.frames.len());
                     let extra = if frames > 1 {
-                        format!(" · кадрів: {frames}")
+                        t!("picture.frames", n = frames).to_string()
                     } else {
                         String::new()
                     };
@@ -534,12 +571,12 @@ impl App {
             });
 
             ui.add_space(8.0);
-            theme::caption(ui, "Розміщення");
+            theme::caption(ui, &t!("picture.fit"));
             ui.horizontal(|ui| {
                 for (fit, label) in [
-                    (Fit::Contain, "Вписати"),
-                    (Fit::Cover, "Заповнити"),
-                    (Fit::Stretch, "Розтягнути"),
+                    (Fit::Contain, t!("picture.contain")),
+                    (Fit::Cover, t!("picture.cover")),
+                    (Fit::Stretch, t!("picture.stretch")),
                 ] {
                     if theme::toggle(ui, opts.fit == fit, label).clicked() {
                         opts.fit = fit;
@@ -547,29 +584,29 @@ impl App {
                 }
             });
             ui.add_space(4.0);
-            theme::caption(ui, "Обробка");
+            theme::caption(ui, &t!("picture.processing"));
             ui.horizontal_wrapped(|ui| {
-                ui.checkbox(&mut opts.dither, "Півтони точками");
+                ui.checkbox(&mut opts.dither, t!("picture.dither"));
                 ui.add_enabled(
                     !opts.dither,
-                    egui::Slider::new(&mut opts.threshold, 0..=255).text("поріг"),
+                    egui::Slider::new(&mut opts.threshold, 0..=255).text(t!("picture.threshold")),
                 );
-                ui.checkbox(&mut opts.invert, "Інвертувати");
+                ui.checkbox(&mut opts.invert, t!("picture.invert"));
             });
 
             ui.add_space(8.0);
-            theme::caption(ui, "Показати на");
+            theme::caption(ui, &t!("picture.show_on"));
             ui.horizontal_wrapped(|ui| {
                 let ready = self.anim.is_some();
-                for (t, label) in TARGETS {
+                for (t, label) in targets() {
                     if theme::primary(ui, ready, label).clicked() {
                         actions.push(Action::Send(t));
                     }
                 }
                 ui.separator();
                 if ui
-                    .button(theme::with_icon(icon::TRASH, "Прибрати картинки"))
-                    .on_hover_text("З обох екранів")
+                    .button(theme::with_icon(icon::TRASH, &t!("picture.clear")))
+                    .on_hover_text(t!("picture.clear_hint"))
                     .clicked()
                 {
                     actions.push(Action::Clear(Target::Both));
@@ -579,12 +616,7 @@ impl App {
 
         ui.add_space(12.0);
         theme::card(ui, |ui| {
-            theme::title(
-                ui,
-                icon::TERMINAL,
-                "Потік кадрів із терміналу",
-                Some("Будь-яке відео чи свій генератор кадрів можна направити на екран:"),
-            );
+            theme::title(ui, icon::TERMINAL, &t!("stream.title"), Some(&t!("stream.hint")));
             ui.add(
                 egui::TextEdit::multiline(
                     &mut "ffmpeg -re -i video.mp4 -vf \"scale=128:32:force_original_aspect_ratio=decrease,\\\n  pad=128:32:(ow-iw)/2:(oh-ih)/2\" -f rawvideo -pix_fmt gray - \\\n  | corne-hud stream --gray --screen side",
@@ -632,7 +664,7 @@ impl eframe::App for App {
                 bottom: 10,
             }))
             .show_separator_line(false)
-            .show(ctx, |ui| self.header(ui));
+            .show(ctx, |ui| self.header(ui, &mut actions));
 
         egui::TopBottomPanel::bottom("message")
             .frame(
@@ -646,7 +678,7 @@ impl eframe::App for App {
                     ui.label(RichText::new(icon::INFO).color(theme::ACCENT).size(16.0));
                     ui.label(RichText::new(&self.message).color(theme::TEXT));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button(icon::X).on_hover_text("Сховати").clicked() {
+                        if ui.small_button(icon::X).on_hover_text(t!("msg.hide")).clicked() {
                             self.message.clear();
                         }
                     });
@@ -675,7 +707,7 @@ impl eframe::App for App {
         if self.preset_text != text_before {
             for (p, v) in PRESETS.iter().zip(self.preset_views.iter_mut()) {
                 if p.uses_text {
-                    v.gen = presets::make(p.id, &self.preset_text).expect("відома заготовка");
+                    v.gen = presets::make(p.id, &self.preset_text).expect("known preset");
                 }
             }
         }

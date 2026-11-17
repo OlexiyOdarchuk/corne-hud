@@ -1,16 +1,20 @@
 //! Звук, що грає на комп'ютері: спектр і хвиля для заготовок.
 //!
 //! Захоплення — з монітора виходу за замовчуванням через `parec` (PipeWire/PulseAudio)
-//! або `pw-record`. Працює, лише поки існує хоч одна заготовка, якій потрібен звук.
+//! або `pw-record`; у Windows — WASAPI loopback. Працює, лише поки існує хоч одна заготовка, якій потрібен звук.
 
 use std::f32::consts::PI;
+#[cfg(not(windows))]
 use std::io::Read;
-use std::process::{Child, Command, Stdio};
+use std::process::Child;
+#[cfg(not(windows))]
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 pub const BANDS: usize = 32;
 pub const WAVE: usize = 128;
+#[cfg_attr(windows, allow(dead_code))]
 const RATE: usize = 48_000;
 const N: usize = 2048;
 
@@ -77,6 +81,7 @@ impl Drop for Analyzer {
     }
 }
 
+#[cfg(not(windows))]
 fn spawn_recorder() -> Option<Child> {
     let rate = RATE.to_string();
     let attempts: [(&str, Vec<&str>); 2] = [
@@ -108,7 +113,7 @@ fn spawn_recorder() -> Option<Child> {
         ),
     ];
     let child = attempts.into_iter().find_map(|(cmd, args)| {
-        Command::new(cmd)
+        crate::platform::host_command(cmd)
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -119,15 +124,79 @@ fn spawn_recorder() -> Option<Child> {
     child
 }
 
+/// Спектр і хвиля з потоку відліків (моно, -1..1).
+struct Analysis {
+    rate: usize,
+    ring: Vec<f32>,
+    pos: usize,
+    fresh: usize,
+    window: Vec<f32>,
+    edges: Vec<usize>,
+    gain: f32,
+}
+
+impl Analysis {
+    fn new(rate: usize) -> Self {
+        Self {
+            rate,
+            ring: vec![0f32; N],
+            pos: 0,
+            fresh: 0,
+            window: (0..N)
+                .map(|i| 0.5 - 0.5 * (2.0 * PI * i as f32 / N as f32).cos())
+                .collect(),
+            edges: band_edges(rate),
+            gain: 1e-3,
+        }
+    }
+
+    fn push(&mut self, samples: impl IntoIterator<Item = f32>, data: &Mutex<Snapshot>) {
+        for v in samples {
+            self.ring[self.pos] = v;
+            self.pos = (self.pos + 1) % N;
+            self.fresh += 1;
+            // ~40 разів на секунду
+            if self.fresh >= self.rate / 40 {
+                self.fresh = 0;
+                self.update(data);
+            }
+        }
+    }
+
+    fn update(&mut self, data: &Mutex<Snapshot>) {
+        let (ring, pos) = (&self.ring, self.pos);
+        let mut re: Vec<f32> = (0..N).map(|i| ring[(pos + i) % N] * self.window[i]).collect();
+        let mut im = vec![0f32; N];
+        fft(&mut re, &mut im);
+        let mut bands = [0f32; BANDS];
+        for (b, w) in self.edges.windows(2).enumerate() {
+            let (lo, hi) = (w[0], w[1].max(w[0] + 1));
+            let peak = (lo..hi)
+                .map(|k| (re[k] * re[k] + im[k] * im[k]).sqrt())
+                .fold(0.0, f32::max);
+            bands[b] = peak;
+        }
+        // Автопідсилення: найгучніша смуга повільно тягне шкалу за собою.
+        let loud = bands.iter().copied().fold(0.0, f32::max);
+        let gain = self.gain;
+        self.gain = if loud > gain { loud } else { gain * 0.995 + loud * 0.005 }.max(2.0);
+        let mut snap = data.lock().unwrap();
+        for (dst, v) in snap.bands.iter_mut().zip(bands) {
+            // логарифмічна шкала: 36 дБ від максимуму до нуля
+            let db = 20.0 * (v / self.gain).max(1e-6).log10();
+            *dst = ((db + 36.0) / 36.0).clamp(0.0, 1.0);
+        }
+        let step = 4; // 512 останніх відліків → 128 точок
+        for (i, w) in snap.wave.iter_mut().enumerate() {
+            let k = (pos + N - WAVE * step + i * step) % N;
+            *w = ring[k];
+        }
+    }
+}
+
+#[cfg(not(windows))]
 fn capture(data: Arc<Mutex<Snapshot>>, stop: Arc<AtomicBool>, slot: Arc<Mutex<Option<Child>>>) {
-    let mut ring = vec![0f32; N];
-    let mut pos = 0usize;
-    let mut fresh = 0usize;
-    let window: Vec<f32> = (0..N)
-        .map(|i| 0.5 - 0.5 * (2.0 * PI * i as f32 / N as f32).cos())
-        .collect();
-    let edges = band_edges();
-    let mut gain = 1e-3f32;
+    let mut analysis = Analysis::new(RATE);
     while !stop.load(Ordering::Relaxed) {
         let Some(mut child) = spawn_recorder() else {
             data.lock().unwrap().ok = false;
@@ -143,41 +212,12 @@ fn capture(data: Arc<Mutex<Snapshot>>, stop: Arc<AtomicBool>, slot: Arc<Mutex<Op
             if out.read_exact(&mut buf).is_err() {
                 break;
             }
-            for pair in buf.as_chunks::<2>().0 {
-                ring[pos] = i16::from_le_bytes(*pair) as f32 / 32768.0;
-                pos = (pos + 1) % N;
-            }
-            fresh += buf.len() / 2;
-            // ~40 разів на секунду
-            if fresh < RATE / 40 {
-                continue;
-            }
-            fresh = 0;
-            let mut re: Vec<f32> = (0..N).map(|i| ring[(pos + i) % N] * window[i]).collect();
-            let mut im = vec![0f32; N];
-            fft(&mut re, &mut im);
-            let mut bands = [0f32; BANDS];
-            for (b, w) in edges.windows(2).enumerate() {
-                let (lo, hi) = (w[0], w[1].max(w[0] + 1));
-                let peak = (lo..hi)
-                    .map(|k| (re[k] * re[k] + im[k] * im[k]).sqrt())
-                    .fold(0.0, f32::max);
-                bands[b] = peak;
-            }
-            // Автопідсилення: найгучніша смуга повільно тягне шкалу за собою.
-            let loud = bands.iter().copied().fold(0.0, f32::max);
-            gain = if loud > gain { loud } else { gain * 0.995 + loud * 0.005 }.max(2.0);
-            let mut snap = data.lock().unwrap();
-            for (dst, v) in snap.bands.iter_mut().zip(bands) {
-                // логарифмічна шкала: 36 дБ від максимуму до нуля
-                let db = 20.0 * (v / gain).max(1e-6).log10();
-                *dst = ((db + 36.0) / 36.0).clamp(0.0, 1.0);
-            }
-            let step = 4; // 512 останніх відліків → 128 точок
-            for (i, w) in snap.wave.iter_mut().enumerate() {
-                let k = (pos + N - WAVE * step + i * step) % N;
-                *w = ring[k];
-            }
+            let samples = buf
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|p| i16::from_le_bytes(*p) as f32 / 32768.0);
+            analysis.push(samples, &data);
         }
         if let Some(mut c) = slot.lock().unwrap().take() {
             let _ = c.kill();
@@ -189,13 +229,89 @@ fn capture(data: Arc<Mutex<Snapshot>>, stop: Arc<AtomicBool>, slot: Arc<Mutex<Op
     }
 }
 
+/// Windows: те, що грає у вихід за замовчуванням, через WASAPI loopback.
+#[cfg(windows)]
+fn capture(data: Arc<Mutex<Snapshot>>, stop: Arc<AtomicBool>, _slot: Arc<Mutex<Option<Child>>>) {
+    use std::time::{Duration, Instant};
+
+    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+
+    while !stop.load(Ordering::Relaxed) {
+        let host = cpal::default_host();
+        let started = host.default_output_device().and_then(|dev| {
+            let cfg = dev.default_output_config().ok()?;
+            let rate = cfg.sample_rate() as usize;
+            let channels = cfg.channels().max(1) as usize;
+            let state = Arc::new(Mutex::new((Analysis::new(rate), Instant::now())));
+            let failed = Arc::new(AtomicBool::new(false));
+            let on_err = {
+                let failed = failed.clone();
+                move |_| failed.store(true, Ordering::Relaxed)
+            };
+            let feed = {
+                let (state, data) = (state.clone(), data.clone());
+                move |mono: &mut dyn Iterator<Item = f32>| {
+                    let mut st = state.lock().unwrap();
+                    st.1 = Instant::now();
+                    st.0.push(mono, &data);
+                }
+            };
+            let stream = match cfg.sample_format() {
+                cpal::SampleFormat::F32 => dev.build_input_stream(
+                    cfg.config(),
+                    move |d: &[f32], _: &_| {
+                        feed(&mut d.chunks(channels).map(|c| c.iter().sum::<f32>() / channels as f32))
+                    },
+                    on_err,
+                    None,
+                ),
+                cpal::SampleFormat::I16 => dev.build_input_stream(
+                    cfg.config(),
+                    move |d: &[i16], _: &_| {
+                        feed(
+                            &mut d
+                                .chunks(channels)
+                                .map(|c| c.iter().map(|&v| v as f32 / 32768.0).sum::<f32>() / channels as f32),
+                        )
+                    },
+                    on_err,
+                    None,
+                ),
+                _ => return None,
+            }
+            .ok()?;
+            stream.play().ok()?;
+            Some((stream, state, failed, rate))
+        });
+        let Some((stream, state, failed, rate)) = started else {
+            data.lock().unwrap().ok = false;
+            std::thread::sleep(Duration::from_secs(10));
+            continue;
+        };
+        data.lock().unwrap().ok = true;
+        let tick = Duration::from_millis(25);
+        while !stop.load(Ordering::Relaxed) && !failed.load(Ordering::Relaxed) {
+            std::thread::sleep(tick);
+            // У тиші loopback не надсилає нічого: тоді доливаємо нулі, щоб смуги згасали.
+            let mut st = state.lock().unwrap();
+            if st.1.elapsed() > tick * 4 {
+                st.0.push(std::iter::repeat_n(0.0, rate / 40), &data);
+            }
+        }
+        drop(stream);
+        if !stop.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_secs(2));
+        }
+    }
+}
+
 /// Межі смуг у номерах відліків спектра: логарифмічно від 40 Гц до 16 кГц.
-fn band_edges() -> Vec<usize> {
+fn band_edges(rate: usize) -> Vec<usize> {
     let (lo, hi) = (40f32, 16_000f32);
     (0..=BANDS)
         .map(|i| {
             let f = lo * (hi / lo).powf(i as f32 / BANDS as f32);
-            ((f * N as f32 / RATE as f32).round() as usize).clamp(1, N / 2)
+            ((f * N as f32 / rate as f32).round() as usize).clamp(1, N / 2)
         })
         .collect()
 }
@@ -255,7 +371,7 @@ mod tests {
 
     #[test]
     fn bands_increase() {
-        let e = band_edges();
+        let e = band_edges(RATE);
         assert_eq!(e.len(), BANDS + 1);
         assert!(e.windows(2).all(|w| w[0] <= w[1]));
     }

@@ -1,16 +1,55 @@
 //! Дані про комп'ютер: CPU, RAM, температури, батарея, музика, розкладка клавіатури.
 
+#[cfg(not(windows))]
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+#[cfg(not(windows))]
+use std::process::Stdio;
+
+#[cfg(not(windows))]
+use crate::platform::host_command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
 #[derive(Default)]
 pub struct Cpu {
     prev: Option<(u64, u64)>, // (зайнятий, усього)
 }
 
+#[cfg(not(target_os = "linux"))]
+pub struct Cpu {
+    sys: psinfo::System,
+}
+
+#[cfg(not(target_os = "linux"))]
+impl Default for Cpu {
+    fn default() -> Self {
+        Self {
+            sys: psinfo::System::new(),
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+impl Cpu {
+    pub fn sample(&mut self) -> u8 {
+        self.sys.refresh_cpu_usage();
+        self.sys.global_cpu_usage().round().clamp(0.0, 100.0) as u8
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn ram_percent() -> u8 {
+    let mut sys = psinfo::System::new();
+    sys.refresh_memory();
+    match sys.total_memory() {
+        0 => 0,
+        t => (sys.used_memory().min(t) * 100 / t) as u8,
+    }
+}
+
+#[cfg(target_os = "linux")]
 impl Cpu {
     /// Завантаження CPU у відсотках з минулого виклику.
     pub fn sample(&mut self) -> u8 {
@@ -36,6 +75,7 @@ impl Cpu {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub fn ram_percent() -> u8 {
     let Ok(info) = std::fs::read_to_string("/proc/meminfo") else {
         return 0;
@@ -122,6 +162,7 @@ pub struct Sensors {
     cpu: Option<PathBuf>,
     gpu: Option<PathBuf>,
     ssd: Option<PathBuf>,
+    #[cfg_attr(windows, allow(dead_code))]
     battery: Option<PathBuf>,
 }
 
@@ -151,6 +192,9 @@ impl Sensors {
             (None, Some(t)) => Some(("SSD", t)),
             _ => None,
         };
+        #[cfg(windows)]
+        let battery = windows_battery();
+        #[cfg(not(windows))]
         let battery = self.battery.as_ref().and_then(|b| {
             let cap: u8 = read_trim(&b.join("capacity"))?.parse().ok()?;
             let power = match read_trim(&b.join("status")).as_deref() {
@@ -169,6 +213,27 @@ impl Sensors {
     }
 }
 
+#[cfg(windows)]
+fn windows_battery() -> Option<(u8, Power)> {
+    use windows_sys::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+    let mut s: SYSTEM_POWER_STATUS = unsafe { std::mem::zeroed() };
+    if unsafe { GetSystemPowerStatus(&mut s) } == 0 {
+        return None;
+    }
+    // 128 — батареї немає, 255 — невідомо.
+    if s.BatteryFlag & 128 != 0 || s.BatteryFlag == 255 || s.BatteryLifePercent > 100 {
+        return None;
+    }
+    let cap = s.BatteryLifePercent;
+    let power = match (s.ACLineStatus == 1, s.BatteryFlag & 8 != 0) {
+        (_, true) => Power::Charging,
+        (true, false) if cap >= 100 => Power::Full,
+        (true, false) => Power::Idle,
+        (false, false) => Power::Discharging,
+    };
+    Some((cap, power))
+}
+
 /* --------------------------------------------------------- розкладка */
 
 #[derive(Clone, Debug, Default)]
@@ -180,6 +245,7 @@ pub struct Layout {
 }
 
 /// Рядки в лапках із виводу busctl (з восьмеричними екрануваннями UTF-8).
+#[cfg_attr(windows, allow(dead_code))]
 fn busctl_strings(out: &str) -> Vec<String> {
     let mut res = Vec::new();
     let mut chars = out.chars().peekable();
@@ -210,6 +276,7 @@ fn busctl_strings(out: &str) -> Vec<String> {
     res
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 fn short_layout(code: &str) -> String {
     match code {
         "us" | "gb" => "EN".into(),
@@ -218,9 +285,10 @@ fn short_layout(code: &str) -> String {
 }
 
 /// Поточна розкладка KDE (через D-Bus: org.kde.keyboard).
+#[cfg(not(windows))]
 fn query_layout() -> Option<String> {
     let call = |method: &str| {
-        let out = Command::new("busctl")
+        let out = host_command("busctl")
             .args([
                 "--user",
                 "call",
@@ -241,7 +309,48 @@ fn query_layout() -> Option<String> {
     Some(short_layout(list.get(idx * 3)?))
 }
 
+/// Мова розкладки активного вікна Windows: EN, UA, …
+#[cfg(windows)]
+fn query_layout() -> Option<String> {
+    use windows_sys::Win32::Globalization::LCIDToLocaleName;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    let mut buf = [0u16; 85]; // LOCALE_NAME_MAX_LENGTH
+    let n = unsafe {
+        let thread = GetWindowThreadProcessId(GetForegroundWindow(), std::ptr::null_mut());
+        let langid = (GetKeyboardLayout(thread) as usize & 0xFFFF) as u32;
+        LCIDToLocaleName(langid, buf.as_mut_ptr(), buf.len() as i32, 0)
+    };
+    if n <= 1 {
+        return None;
+    }
+    let name = String::from_utf16_lossy(&buf[..n as usize - 1]); // "uk-UA"
+    Some(match name.split('-').next()? {
+        "uk" => "UA".into(),
+        lang => lang.to_uppercase(),
+    })
+}
+
+/// Windows не надсилає подію про зміну розкладки іншим програмам, тож перевіряємо 4 рази на секунду.
+#[cfg(windows)]
+pub fn watch_layout() -> Arc<Mutex<Layout>> {
+    let state = Arc::new(Mutex::new(Layout::default()));
+    let st = state.clone();
+    std::thread::spawn(move || loop {
+        if let Some(name) = query_layout() {
+            let mut l = st.lock().unwrap();
+            if l.name != name {
+                l.name = name;
+                l.seq += 1;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    });
+    state
+}
+
 /// Стежить за перемиканням розкладки. Працює в KDE Plasma; деінде назва лишається порожньою.
+#[cfg(not(windows))]
 pub fn watch_layout() -> Arc<Mutex<Layout>> {
     let state = Arc::new(Mutex::new(Layout::default()));
     let st = state.clone();
@@ -256,7 +365,7 @@ pub fn watch_layout() -> Arc<Mutex<Layout>> {
     };
     std::thread::spawn(move || loop {
         update(&st);
-        let child = Command::new("busctl")
+        let child = host_command("busctl")
             .args([
                 "--user",
                 "monitor",
@@ -288,13 +397,70 @@ pub struct Track {
     pub text: String,
 }
 
+/// `playing`: Some(true) — грає, Some(false) — пауза, None — зупинено або невідомо.
+fn make_track(playing: Option<bool>, artist: &str, title: &str) -> Option<Track> {
+    let (playing, title, artist) = (playing?, title.trim(), artist.trim());
+    if title.is_empty() {
+        return None;
+    }
+    let text = if artist.is_empty() {
+        title.to_string()
+    } else {
+        format!("{artist} - {title}")
+    };
+    Some(Track {
+        playing,
+        text: translit(&text),
+    })
+}
+
+/// Windows: поточний трек із системного медіа (той самий, що в регуляторі гучності):
+/// браузер, Spotify, медіаплеєр…
+#[cfg(windows)]
+pub fn watch_music() -> Arc<Mutex<Option<Track>>> {
+    use windows::Media::Control::{
+        GlobalSystemMediaTransportControlsSessionManager as Manager,
+        GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status,
+    };
+
+    let state = Arc::new(Mutex::new(None));
+    let st = state.clone();
+    std::thread::spawn(move || {
+        let _ = unsafe {
+            windows::Win32::System::WinRT::RoInitialize(windows::Win32::System::WinRT::RO_INIT_MULTITHREADED)
+        };
+        let mut manager = None;
+        loop {
+            if manager.is_none() {
+                manager = Manager::RequestAsync().and_then(|op| op.join()).ok();
+            }
+            let track = manager.as_ref().and_then(|m| {
+                let session = m.GetCurrentSession().ok()?;
+                let props = session.TryGetMediaPropertiesAsync().ok()?.join().ok()?;
+                let playing = match session.GetPlaybackInfo().ok()?.PlaybackStatus().ok()? {
+                    Status::Playing => Some(true),
+                    Status::Paused => Some(false),
+                    _ => None,
+                };
+                let artist = props.Artist().map(|s| s.to_string()).unwrap_or_default();
+                let title = props.Title().map(|s| s.to_string()).unwrap_or_default();
+                make_track(playing, &artist, &title)
+            });
+            *st.lock().unwrap() = track;
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    });
+    state
+}
+
 /// Стежить за плеєрами через `playerctl --follow` (MPRIS: браузер, Spotify, mpv…).
 /// Якщо playerctl немає — просто нічого не показує.
+#[cfg(not(windows))]
 pub fn watch_music() -> Arc<Mutex<Option<Track>>> {
     let state = Arc::new(Mutex::new(None));
     let st = state.clone();
     std::thread::spawn(move || loop {
-        let child = Command::new("playerctl")
+        let child = host_command("playerctl")
             .args(["--follow", "metadata", "--format", "{{status}}\t{{artist}}\t{{title}}"])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -311,21 +477,12 @@ pub fn watch_music() -> Arc<Mutex<Option<Track>>> {
                     parts.next().unwrap_or(""),
                     parts.next().unwrap_or(""),
                 );
-                let track = match (status, title.trim()) {
-                    ("Playing" | "Paused", t) if !t.is_empty() => {
-                        let text = if artist.trim().is_empty() {
-                            t.to_string()
-                        } else {
-                            format!("{} - {t}", artist.trim())
-                        };
-                        Some(Track {
-                            playing: status == "Playing",
-                            text: translit(&text),
-                        })
-                    }
+                let playing = match status {
+                    "Playing" => Some(true),
+                    "Paused" => Some(false),
                     _ => None,
                 };
-                *st.lock().unwrap() = track;
+                *st.lock().unwrap() = make_track(playing, artist, title);
             }
         }
         let _ = child.wait();

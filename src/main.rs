@@ -1,8 +1,12 @@
+// Windows: без чорного вікна консолі для GUI; команди підключаються до консолі, з якої їх запустили.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod audio;
 mod daemon;
 mod device;
 mod draw;
 mod gui;
+mod i18n;
 mod ipc;
 mod keys;
 mod live;
@@ -10,12 +14,13 @@ mod media;
 mod oled;
 mod paint;
 mod pixfont;
+mod platform;
 mod presets;
 mod sysinfo;
 mod theme;
 
 use std::io::Read;
-use std::os::unix::process::CommandExt;
+
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
@@ -25,10 +30,13 @@ use clap::{Parser, Subcommand};
 use ipc::{Client, Request, Response, Screen, Target};
 use oled::{ConvertOpts, Fit};
 
-/// Екрани Corne: режими, картинки, GIF, потік кадрів, годинник/CPU/RAM/музика.
-/// Без команди відкриває вікно.
+#[macro_use]
+extern crate rust_i18n;
+
+rust_i18n::i18n!("locales", fallback = "en");
+
 #[derive(Parser)]
-#[command(name = "corne-hud", version)]
+#[command(name = "corne-hud", version, about = t!("cli.about").to_string())]
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
@@ -36,86 +44,77 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Вікно керування
+    #[command(about = t!("cli.gui").to_string())]
     Gui,
-    /// Вікно, одразу на вкладці малювання
+    #[command(about = t!("cli.draw").to_string())]
     Draw,
-    /// Фонова служба (запускається сама, коли потрібна)
+    #[command(about = t!("cli.daemon").to_string())]
     Daemon,
-    /// Стан клавіатури й екранів
+    #[command(about = t!("cli.status").to_string())]
     Status,
-    /// Вибрати режим екрана
+    #[command(about = t!("cli.screen").to_string())]
     Screen {
         #[arg(value_enum)]
         target: Target,
         #[arg(value_enum)]
         screen: Screen,
-        /// Не запам'ятовувати після вимкнення клавіатури
-        #[arg(long)]
+        #[arg(long, help = t!("cli.no_save").to_string())]
         no_save: bool,
     },
-    /// Показати картинку або GIF
+    #[command(about = t!("cli.image").to_string())]
     Image {
         file: PathBuf,
-        /// На який екран
-        #[arg(short, long, value_enum, default_value = "side")]
+        #[arg(short, long, value_enum, default_value = "side", help = t!("cli.image_screen").to_string())]
         screen: Target,
-        #[arg(long, value_enum, default_value = "contain")]
+        #[arg(long, value_enum, default_value = "contain", help = t!("cli.fit").to_string())]
         fit: Fit,
-        /// Без розсіювання: чіткий поріг яскравості
-        #[arg(long)]
+        #[arg(long, help = t!("cli.no_dither").to_string())]
         no_dither: bool,
-        /// Поріг яскравості 0..255 (разом із --no-dither)
-        #[arg(long, default_value_t = 128)]
+        #[arg(long, default_value_t = 128, help = t!("cli.threshold").to_string())]
         threshold: u8,
-        #[arg(long)]
+        #[arg(long, help = t!("cli.invert").to_string())]
         invert: bool,
-        /// Не відновлювати після перезапуску служби
-        #[arg(long)]
+        #[arg(long, help = t!("cli.image_no_save").to_string())]
         no_save: bool,
     },
-    /// Потік кадрів зі stdin: 512 байт на кадр у форматі екрана,
-    /// або з --gray 4096 байт (128x32, 1 байт на піксель, як ffmpeg -pix_fmt gray)
+    #[command(about = t!("cli.stream").to_string())]
     Stream {
-        #[arg(short, long, value_enum, default_value = "side")]
+        #[arg(short, long, value_enum, default_value = "side", help = t!("cli.image_screen").to_string())]
         screen: Target,
-        #[arg(long)]
+        #[arg(long, help = t!("cli.gray").to_string())]
         gray: bool,
-        /// Поріг для --gray
-        #[arg(long, default_value_t = 128)]
+        #[arg(long, default_value_t = 128, help = t!("cli.stream_threshold").to_string())]
         threshold: u8,
-        /// Обмежити частоту кадрів (екран показує до 20 кадрів/с)
-        #[arg(long)]
+        #[arg(long, help = t!("cli.fps").to_string())]
         fps: Option<f32>,
     },
-    /// Увімкнути заготовку (список — `corne-hud presets`)
+    #[command(about = t!("cli.preset").to_string())]
     Preset {
         id: String,
-        #[arg(short, long, value_enum, default_value = "side")]
+        #[arg(short, long, value_enum, default_value = "side", help = t!("cli.image_screen").to_string())]
         screen: Target,
-        /// Текст для заготовок «text» і «bounce»
-        #[arg(short, long, default_value = "")]
+        #[arg(short, long, default_value = "", help = t!("cli.preset_text").to_string())]
         text: String,
     },
-    /// Список заготовок
+    #[command(about = t!("cli.presets").to_string())]
     Presets,
-    /// Показати свій текст (будь-якою мовою); довгий біжить рядком
+    #[command(about = t!("cli.text").to_string())]
     Text {
         text: String,
-        #[arg(short, long, value_enum, default_value = "side")]
+        #[arg(short, long, value_enum, default_value = "side", help = t!("cli.image_screen").to_string())]
         screen: Target,
     },
-    /// Демо-GIF заготовок і ефектів малювання (для документації)
+    /// Demo GIFs of presets and drawing effects (for the docs).
     #[command(hide = true)]
     DocsMedia { dir: PathBuf },
-    /// Прибрати картинку
+    #[command(about = t!("cli.clear").to_string())]
     Clear {
         #[arg(value_enum, default_value = "both")]
         screen: Target,
     },
-    /// Вимкнути екрани
+    #[command(about = t!("cli.off").to_string())]
     Off,
-    /// Увімкнути екрани
+    #[command(about = t!("cli.on").to_string())]
     On,
 }
 
@@ -124,48 +123,53 @@ pub fn ensure_daemon() -> Result<Client, String> {
     if let Ok(c) = Client::connect() {
         return Ok(c);
     }
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    Command::new(exe)
-        .arg("daemon")
+    let exe = platform::service_exe().map_err(|e| e.to_string())?;
+    let mut cmd = Command::new(exe);
+    cmd.arg("daemon")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .process_group(0) // не завершуватись разом із терміналом
-        .spawn()
-        .map_err(|e| format!("не вдалося запустити службу: {e}"))?;
+        .stderr(Stdio::null());
+    platform::detach(&mut cmd); // не завершуватись разом із терміналом
+    cmd.spawn().map_err(|e| t!("err.daemon_start", err = e).to_string())?;
     for _ in 0..30 {
         std::thread::sleep(Duration::from_millis(100));
         if let Ok(c) = Client::connect() {
             return Ok(c);
         }
     }
-    Err("служба не запустилась".into())
+    Err(t!("err.daemon_not_started").into())
 }
 
 fn print_status(s: &ipc::Status) {
     if s.keyboard && s.paused {
-        println!("Клавіатура: підключена, пауза — її відкрила інша програма (Vial)");
+        println!("{}", t!("cli.st_paused"));
     } else if s.keyboard {
-        println!("Клавіатура: підключена");
+        println!("{}", t!("cli.st_connected"));
     } else {
-        println!("Клавіатура: не підключена ({})", s.error);
+        println!("{}", t!("cli.st_not_found", err = s.error));
     }
-    let name = |x: Option<Screen>| x.map_or("?".into(), |s| s.label().to_string());
-    println!("Половина з USB: {} | картинка: {}", name(s.main_screen), s.main_content);
-    println!("Друга половина: {} | картинка: {}", name(s.side_screen), s.side_content);
+    let name = |x: Option<Screen>| x.map_or("?".into(), |s| s.label());
+    println!(
+        "{}",
+        t!("cli.st_main", mode = name(s.main_screen), content = s.main_content)
+    );
+    println!(
+        "{}",
+        t!("cli.st_side", mode = name(s.side_screen), content = s.side_content)
+    );
     if s.screens_off {
-        println!("Екрани вимкнені");
+        println!("{}", t!("cli.st_off"));
     }
     if !s.layout.is_empty() {
         let shown = if s.settings.layout_flash {
-            "показується при перемиканні"
+            t!("cli.st_layout_shown")
         } else {
-            "не показується"
+            t!("cli.st_layout_hidden")
         };
-        println!("Розкладка: {} ({shown})", s.layout);
+        println!("{}", t!("cli.st_layout", layout = s.layout, shown = shown));
     }
     if s.keyboard && s.fw_proto == 1 {
-        println!("Прошивка протоколу 1: розкладка видна лише на екранах із картинкою чи заготовкою");
+        println!("{}", t!("cli.st_old_fw"));
     }
 }
 
@@ -210,14 +214,11 @@ fn run(cmd: Cmd) -> Result<(), String> {
             let anim = oled::Source::open(&file)?.convert(&opts);
             let n = anim.frames.len();
             ensure_daemon()?.call_ok(&ipc::show_request(screen, &anim, !no_save))?;
-            println!(
-                "Надіслано: {}",
-                if n == 1 {
-                    "картинка".to_string()
-                } else {
-                    format!("анімація, кадрів: {n}")
-                }
-            );
+            if n == 1 {
+                println!("{}", t!("cli.sent_image"));
+            } else {
+                println!("{}", t!("cli.sent_anim", n = n));
+            }
             Ok(())
         }
         Cmd::Stream {
@@ -260,7 +261,7 @@ fn run(cmd: Cmd) -> Result<(), String> {
             .map(|_| ()),
         Cmd::Presets => {
             for p in presets::PRESETS {
-                println!("{:<8} {}", p.id, p.label);
+                println!("{:<8} {}", p.id, p.label());
             }
             Ok(())
         }
@@ -279,6 +280,12 @@ fn run(cmd: Cmd) -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
+        AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+    i18n::init();
     let cli = Cli::parse();
     match run(cli.cmd.unwrap_or(Cmd::Gui)) {
         Ok(()) => ExitCode::SUCCESS,

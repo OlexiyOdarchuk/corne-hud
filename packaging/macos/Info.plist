@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- @VERSION@ is replaced by the release workflow. -->
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleLocalizations</key>
+  <array>
+    <string>en</string>
+    <string>uk</string>
+  </array>
+  <key>CFBundleDisplayName</key>
+  <string>Corne HUD</string>
+  <key>CFBundleName</key>
+  <string>Corne HUD</string>
+  <key>CFBundleIdentifier</key>
+  <string>io.github.OlexiyOdarchuk.CorneHud</string>
+  <key>CFBundleExecutable</key>
+  <string>corne-hud</string>
+  <key>CFBundleIconFile</key>
+  <string>corne-hud</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleShortVersionString</key>
+  <string>@VERSION@</string>
+  <key>CFBundleVersion</key>
+  <string>@VERSION@</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.utilities</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>11.0</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSHumanReadableCopyright</key>
+  <string>MIT License</string>
+</dict>
+</plist>

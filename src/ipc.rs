@@ -1,8 +1,7 @@
-//! Зв'язок вікна й команд із фоновою службою: рядки JSON через Unix-сокет.
+//! Зв'язок вікна й команд із фоновою службою: рядки JSON через Unix-сокет
+//! (на Windows — через TCP на 127.0.0.1).
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use base64::Engine;
@@ -13,11 +12,11 @@ use crate::oled::{Anim, Frame, FB};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum Target {
-    /// Половина, підключена до USB
+    #[value(help = t!("cli.t_main").to_string())]
     Main,
-    /// Друга половина
+    #[value(help = t!("cli.t_side").to_string())]
     Side,
-    /// Обидві
+    #[value(help = t!("cli.t_both").to_string())]
     Both,
 }
 
@@ -66,15 +65,16 @@ impl Screen {
     pub fn index(self) -> u8 {
         self as u8
     }
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            Screen::Status => "Статус: шар, WPM, модифікатори",
-            Screen::Ship => "Корабель і астероїди",
-            Screen::Pet => "Вихованець",
-            Screen::Eq => "Еквалайзер",
-            Screen::Pc => "Годинник, CPU/RAM, музика",
-            Screen::Image => "Картинка / анімація",
+            Screen::Status => t!("screen.status"),
+            Screen::Ship => t!("screen.ship"),
+            Screen::Pet => t!("screen.pet"),
+            Screen::Eq => t!("screen.eq"),
+            Screen::Pc => t!("screen.pc"),
+            Screen::Image => t!("screen.image"),
         }
+        .into()
     }
 }
 
@@ -123,6 +123,9 @@ pub struct Settings {
     /// Показувати розкладку клавіатури при перемиканні.
     pub layout_flash: bool,
     pub layout_target: Target,
+    /// Interface language: `en`, `uk`…; empty means the system language.
+    #[serde(default)]
+    pub lang: String,
 }
 
 impl Default for Settings {
@@ -130,6 +133,7 @@ impl Default for Settings {
         Self {
             layout_flash: true,
             layout_target: Target::Both,
+            lang: String::new(),
         }
     }
 }
@@ -165,15 +169,53 @@ pub enum Response {
     Error { message: String },
 }
 
-pub fn socket_path() -> PathBuf {
+#[cfg(unix)]
+pub type Stream = std::os::unix::net::UnixStream;
+#[cfg(unix)]
+pub type Listener = std::os::unix::net::UnixListener;
+#[cfg(windows)]
+pub type Stream = std::net::TcpStream;
+#[cfg(windows)]
+pub type Listener = std::net::TcpListener;
+
+#[cfg(unix)]
+pub fn socket_path() -> std::path::PathBuf {
     match std::env::var_os("XDG_RUNTIME_DIR") {
-        Some(dir) => PathBuf::from(dir).join("corne-hud.sock"),
+        Some(dir) => std::path::PathBuf::from(dir).join("corne-hud.sock"),
         None => {
-            use std::os::unix::fs::MetadataExt;
-            let uid = std::fs::metadata("/proc/self").map(|m| m.uid()).unwrap_or(0);
+            let uid = unsafe { libc::getuid() };
             std::env::temp_dir().join(format!("corne-hud-{uid}.sock"))
         }
     }
+}
+
+#[cfg(windows)]
+const ADDR: &str = "127.0.0.1:47653";
+
+/// Де служба чекає з'єднань (для повідомлень).
+pub fn endpoint() -> String {
+    #[cfg(unix)]
+    return socket_path().display().to_string();
+    #[cfg(windows)]
+    return ADDR.to_string();
+}
+
+pub fn connect() -> std::io::Result<Stream> {
+    #[cfg(unix)]
+    return Stream::connect(socket_path());
+    #[cfg(windows)]
+    return Stream::connect_timeout(&ADDR.parse().unwrap(), Duration::from_secs(1));
+}
+
+pub fn bind() -> Result<Listener, String> {
+    #[cfg(unix)]
+    {
+        let path = socket_path();
+        let _ = std::fs::remove_file(&path);
+        Listener::bind(&path).map_err(|e| format!("{}: {e}", path.display()))
+    }
+    #[cfg(windows)]
+    Listener::bind(ADDR).map_err(|e| format!("{ADDR}: {e}"))
 }
 
 pub fn encode_frame(f: &Frame) -> String {
@@ -185,7 +227,7 @@ pub fn decode_frame(s: &str) -> Result<Frame, String> {
         .decode(s)
         .map_err(|e| e.to_string())?;
     v.try_into()
-        .map_err(|v: Vec<u8>| format!("кадр має бути {FB} байт, а не {}", v.len()))
+        .map_err(|v: Vec<u8>| t!("err.frame_size", need = FB, got = v.len()).into())
 }
 
 pub fn show_request(target: Target, anim: &Anim, persist: bool) -> Request {
@@ -199,13 +241,13 @@ pub fn show_request(target: Target, anim: &Anim, persist: bool) -> Request {
 
 /// Постійне з'єднання зі службою.
 pub struct Client {
-    reader: BufReader<UnixStream>,
-    writer: UnixStream,
+    reader: BufReader<Stream>,
+    writer: Stream,
 }
 
 impl Client {
     pub fn connect() -> Result<Self, String> {
-        let s = UnixStream::connect(socket_path()).map_err(|_| "служба corne-hud не запущена".to_string())?;
+        let s = connect().map_err(|_| t!("err.no_daemon").to_string())?;
         s.set_read_timeout(Some(Duration::from_secs(5))).ok();
         let writer = s.try_clone().map_err(|e| e.to_string())?;
         Ok(Self {
@@ -221,7 +263,7 @@ impl Client {
         let mut resp = String::new();
         self.reader.read_line(&mut resp).map_err(|e| e.to_string())?;
         if resp.is_empty() {
-            return Err("служба закрила з'єднання".into());
+            return Err(t!("err.conn_closed").into());
         }
         serde_json::from_str(&resp).map_err(|e| e.to_string())
     }

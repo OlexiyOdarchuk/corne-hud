@@ -36,12 +36,12 @@ pub fn set_px(f: &mut Frame, x: usize, y: usize, on: bool) {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 pub enum Fit {
-    /// Вписати цілком, по краях — чорне
     #[default]
+    #[value(help = t!("cli.fit_contain").to_string())]
     Contain,
-    /// Заповнити весь екран, зайве обрізати
+    #[value(help = t!("cli.fit_cover").to_string())]
     Cover,
-    /// Розтягнути без збереження пропорцій
+    #[value(help = t!("cli.fit_stretch").to_string())]
     Stretch,
 }
 
@@ -100,7 +100,7 @@ impl Source {
             vec![(img.to_rgba8(), 1000)]
         };
         if frames.is_empty() {
-            return Err("у файлі немає кадрів".into());
+            return Err(t!("err.file_no_frames").into());
         }
         Ok(Self { frames })
     }
@@ -232,7 +232,7 @@ pub fn save_image(path: &Path, anim: &Anim, scale: u32) -> Result<(), String> {
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("gif"));
     if !is_gif {
-        let f = anim.frames.first().ok_or("немає кадрів")?;
+        let f = anim.frames.first().ok_or_else(|| t!("err.no_frames").to_string())?;
         return to_rgba(f, scale).save(path).map_err(|e| e.to_string());
     }
     use image::codecs::gif::{GifEncoder, Repeat};

@@ -1,0 +1,12 @@
+# Variant of ../corne-hud.service for distro packages (binary in /usr/bin).
+# Installed to /usr/lib/systemd/user/corne-hud.service.
+[Unit]
+Description=Corne HUD: OLED screens of the Corne keyboard
+
+[Service]
+ExecStart=/usr/bin/corne-hud daemon
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
